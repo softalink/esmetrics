@@ -37,14 +37,20 @@ pub fn fsync_dir(path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs::{File, write};
+    use std::fs::OpenOptions;
 
     #[test]
     fn fsync_file_succeeds_on_a_real_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("foo");
-        write(&path, b"data").unwrap();
-        let file = File::open(&path).unwrap();
+        // Open writable: Windows `FlushFileBuffers` rejects read-only handles.
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .unwrap();
         fsync_file(&file).unwrap();
     }
 

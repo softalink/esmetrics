@@ -35,18 +35,20 @@ description = "Drop-in single-node VictoriaMetrics-compatible time-series databa
 
 [workspace.dependencies]
 # Internal crates ----------------------------------------------------------
-esm-platform = { path = "crates/esm-platform" }
-esm-common = { path = "crates/esm-common" }
-esm-compress = { path = "crates/esm-compress" }
-esm-storage = { path = "crates/esm-storage" }
-esm-promql = { path = "crates/esm-promql" }
-esm-protocols = { path = "crates/esm-protocols" }
-esm-scrape = { path = "crates/esm-scrape" }
-esm-discovery = { path = "crates/esm-discovery" }
-esm-alerting = { path = "crates/esm-alerting" }
-esm-net = { path = "crates/esm-net" }
-esm-objstore = { path = "crates/esm-objstore" }
-esm-vmui = { path = "crates/esm-vmui" }
+# Path + version: path drives local builds; the explicit version keeps these
+# off cargo-deny's wildcard list and leaves the crates publish-ready.
+esm-platform = { path = "crates/esm-platform", version = "0.1.0-pre" }
+esm-common = { path = "crates/esm-common", version = "0.1.0-pre" }
+esm-compress = { path = "crates/esm-compress", version = "0.1.0-pre" }
+esm-storage = { path = "crates/esm-storage", version = "0.1.0-pre" }
+esm-promql = { path = "crates/esm-promql", version = "0.1.0-pre" }
+esm-protocols = { path = "crates/esm-protocols", version = "0.1.0-pre" }
+esm-scrape = { path = "crates/esm-scrape", version = "0.1.0-pre" }
+esm-discovery = { path = "crates/esm-discovery", version = "0.1.0-pre" }
+esm-alerting = { path = "crates/esm-alerting", version = "0.1.0-pre" }
+esm-net = { path = "crates/esm-net", version = "0.1.0-pre" }
+esm-objstore = { path = "crates/esm-objstore", version = "0.1.0-pre" }
+esm-vmui = { path = "crates/esm-vmui", version = "0.1.0-pre" }
 
 # External crates ----------------------------------------------------------
 # Pinned at first-use; entries land here as the workspace grows.

@@ -27,6 +27,8 @@ allow = [
     "Unicode-DFS-2016",
     "Zlib",
     "CC0-1.0",
+    # webpki-roots ships Mozilla's CA bundle under CDLA-Permissive-2.0.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.93
 exceptions = []

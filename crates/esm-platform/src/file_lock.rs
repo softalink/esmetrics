@@ -38,7 +38,9 @@ impl FileLock {
             OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
         match FileExt::try_lock_exclusive(&file) {
             Ok(()) => Ok(Some(Self { file })),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(None),
+            // Contention surfaces as `WouldBlock` on Unix but `ERROR_LOCK_VIOLATION`
+            // (Uncategorized) on Windows; `lock_contended_error` is the portable match.
+            Err(e) if e.kind() == fs2::lock_contended_error().kind() => Ok(None),
             Err(e) => Err(e),
         }
     }
