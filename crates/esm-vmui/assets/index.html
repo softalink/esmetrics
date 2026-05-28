@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>EsMetrics</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; margin: 2rem auto; max-width: 48rem; padding: 0 1rem; color: #222; }
+    h1 { font-size: 1.5rem; }
+    code, pre { background: #f4f4f4; padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.95em; }
+    pre { padding: 0.7rem 1rem; overflow-x: auto; }
+    a { color: #0a66c2; }
+    .ok { color: #2a7a2a; }
+    .note { background: #fff8d6; border-left: 4px solid #d4b830; padding: 0.5rem 1rem; margin: 1rem 0; }
+  </style>
+</head>
+<body>
+  <h1>EsMetrics is running <span class="ok">✓</span></h1>
+  <p>This server speaks the VictoriaMetrics + Prometheus HTTP API. The vmui
+  React UI is not yet embedded — for now, point your existing Grafana /
+  vmui at this host.</p>
+
+  <div class="note">
+    The build script that downloads and embeds the upstream vmui bundle
+    (Apache 2.0, vendored unchanged) is scheduled for a later sub-phase
+    per the project plan.
+  </div>
+
+  <h2>Quick query</h2>
+  <pre>curl 'http://HOST:PORT/api/v1/promql?query=up'</pre>
+
+  <h2>Ingest a sample</h2>
+  <pre>curl -XPOST --data-binary @metrics.txt 'http://HOST:PORT/api/v1/import/prometheus'</pre>
+
+  <h2>Status endpoints</h2>
+  <ul>
+    <li><a href="/api/v1/status/buildinfo">/api/v1/status/buildinfo</a></li>
+    <li><a href="/api/v1/status/runtimeinfo">/api/v1/status/runtimeinfo</a></li>
+    <li><a href="/api/v1/status/tsdb">/api/v1/status/tsdb</a></li>
+    <li><a href="/metrics">/metrics</a></li>
+  </ul>
+</body>
+</html>

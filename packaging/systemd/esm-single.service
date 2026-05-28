@@ -1,0 +1,24 @@
+[Unit]
+Description=EsMetrics single-node server (drop-in for vmsingle)
+Documentation=https://github.com/owner/esmetrics
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=esmetrics
+Group=esmetrics
+ExecStart=/usr/local/bin/esm-single \
+    --storage-data-path=/var/lib/esmetrics \
+    --http-listen-addr=127.0.0.1:8428 \
+    --retention-period-secs=2592000
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=1048576
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

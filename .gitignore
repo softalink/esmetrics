@@ -1,0 +1,28 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+
+# Conformance harness cache (regenerable artifacts; do not commit)
+/target/conformance-cache
+/target/conformance-failures
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# PGO profiles
+/pgo-data
+*.profraw
+*.profdata
+
+# Local override files
+/.env
+/.envrc
+/local-overrides.toml
+
+# OS-specific
+Thumbs.db
+Desktop.ini

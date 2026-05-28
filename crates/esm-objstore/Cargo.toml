@@ -1,0 +1,19 @@
+[package]
+name = "esm-objstore"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Object-storage abstraction (S3, GCS, Azure) for esm-backup / esm-restore."
+
+[lints]
+workspace = true
+
+[dependencies]
+esm-common = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

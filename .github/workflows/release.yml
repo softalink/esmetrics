@@ -1,0 +1,174 @@
+name: release
+
+# Triggered by a `v*` tag. Per ADR-001 #17 binaries are signed with
+# owner-provided Apple Developer ID + Windows EV certs; per ADR-001 #9
+# cosign keyless + SLSA L3 provenance accompany each release.
+#
+# This workflow is scaffolded — the secrets and per-platform signing steps
+# are marked TODO and only activate once the owner uploads the required
+# `secrets.*` values in the repository settings.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-x86_64-gnu
+            target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - label: linux-x86_64-musl
+            target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            apt: musl-tools
+          - label: linux-aarch64-gnu
+            target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            cross_cc: aarch64-linux-gnu-gcc
+            apt: gcc-aarch64-linux-gnu
+          - label: macos-aarch64
+            target: aarch64-apple-darwin
+            os: macos-14
+          - label: macos-x86_64
+            target: x86_64-apple-darwin
+            os: macos-13
+          - label: windows-x86_64-msvc
+            target: x86_64-pc-windows-msvc
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: install cross toolchain (apt)
+        if: matrix.apt != ''
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.apt }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.label }}
+      - name: build release binaries
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.cross_cc }}
+          CC_aarch64_unknown_linux_gnu: ${{ matrix.cross_cc }}
+        run: |
+          for crate in esm-single esm-agent esm-alert esm-auth esm-backup esm-ctl; do
+            cargo build --release --target ${{ matrix.target }} -p "$crate"
+          done
+
+      # macOS code signing with the owner-provided Developer ID
+      # certificate. The cert lives in repo secrets as base64 PKCS#12.
+      # Skipped until secrets.APPLE_DEVELOPER_ID_CERT is uploaded.
+      - name: codesign (macOS)
+        if: startsWith(matrix.os, 'macos-') && env.APPLE_DEVELOPER_ID_CERT != ''
+        env:
+          APPLE_DEVELOPER_ID_CERT: ${{ secrets.APPLE_DEVELOPER_ID_CERT }}
+          APPLE_DEVELOPER_ID_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_PASSWORD }}
+        run: |
+          echo "TODO: import APPLE_DEVELOPER_ID_CERT into a temporary keychain"
+          echo "TODO: codesign --sign 'Developer ID Application' --timestamp --options runtime <binary>"
+          echo "TODO: xcrun notarytool submit / staple"
+
+      # Windows signing with the owner-provided EV cert.
+      # Skipped until secrets.WINDOWS_EV_CERT is uploaded.
+      - name: signtool (Windows)
+        if: matrix.os == 'windows-latest' && env.WINDOWS_EV_CERT != ''
+        shell: pwsh
+        env:
+          WINDOWS_EV_CERT: ${{ secrets.WINDOWS_EV_CERT }}
+          WINDOWS_EV_PASSWORD: ${{ secrets.WINDOWS_EV_PASSWORD }}
+        run: |
+          # TODO: import cert, signtool sign /tr <ts-url> /td sha256 /fd sha256 /sha1 <thumb> <exe>
+          Write-Host "EV signing placeholder"
+
+      - name: archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          name="esmetrics-${version}-${{ matrix.label }}"
+          mkdir -p "dist/$name"
+          for crate in esm-single esm-agent esm-alert esm-auth esm-backup esm-ctl; do
+            src="target/${{ matrix.target }}/release/$crate"
+            if [ "${{ matrix.os }}" = "windows-latest" ]; then
+              src="$src.exe"
+              cp "$src" "dist/$name/"
+            else
+              cp "$src" "dist/$name/"
+            fi
+          done
+          cp LICENSE NOTICE CREDITS.md "dist/$name/"
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            (cd dist && 7z a "${name}.zip" "$name")
+          else
+            tar -czf "dist/${name}.tar.gz" -C dist "$name"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.label }}
+          path: dist/esmetrics-*
+
+  sign-and-attest:
+    name: cosign + SLSA
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/
+      - uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+
+      # Keyless cosign sign-blob for each archive.
+      - name: cosign sign-blob
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+        run: |
+          find dist -type f \( -name '*.tar.gz' -o -name '*.zip' \) | while read -r f; do
+            cosign sign-blob --yes --output-signature "$f.sig" --output-certificate "$f.crt" "$f"
+          done
+
+      # SLSA build provenance attestation.
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'dist/**/esmetrics-*.{tar.gz,zip}'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signatures
+          path: |
+            dist/**/*.sig
+            dist/**/*.crt
+
+  publish:
+    name: publish release
+    runs-on: ubuntu-latest
+    needs: sign-and-attest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/**/esmetrics-*.tar.gz
+            dist/**/esmetrics-*.zip
+            dist/**/*.sig
+            dist/**/*.crt

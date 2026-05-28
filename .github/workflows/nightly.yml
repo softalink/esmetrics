@@ -1,0 +1,84 @@
+name: nightly
+
+# Per PLAN.md §11.1: full conformance suite, bench vs upstream VM at
+# v1.144.0 (±5% threshold), one-hour fuzz smoke, cargo-audit. Runs at 02:00
+# UTC daily.
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  audit:
+    name: cargo-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit --deny warnings
+
+  deny:
+    name: cargo-deny (full)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: cargo deny check
+
+  vs-upstream:
+    name: bench vs VictoriaMetrics v1.144.0
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bench-vs-upstream
+      - name: cargo xtask perf compare --against vm
+        run: cargo xtask perf compare --against vm
+
+  fuzz-smoke:
+    name: fuzz smoke (60min)
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      # No fuzz targets exist yet; the workflow stays a placeholder until
+      # Phase 1B adds the codec fuzz targets.
+      - name: list fuzz targets
+        run: cargo fuzz list 2>&1 || echo "(no fuzz targets defined yet)"
+
+  miri:
+    name: miri (pure-Rust crates)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: miri
+      # Miri is restricted to crates without FFI / mmap / file_lock. esm-promql
+      # and esm-compress are both pure Rust and host the bulk of the
+      # custom data-format work.
+      - name: cargo miri test -p esm-promql
+        run: cargo miri test -p esm-promql --lib
+      - name: cargo miri test -p esm-compress
+        run: cargo miri test -p esm-compress --lib

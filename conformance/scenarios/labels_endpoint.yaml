@@ -1,0 +1,20 @@
+name: labels_endpoint
+description: /api/v1/label/<n>/values matches between esm and upstream VM.
+
+ingest:
+  - protocol: prom-text
+    inline: |
+      cpu_usage{host="a",region="us-east"} 0 1779000000000
+      cpu_usage{host="b",region="us-west"} 0 1779000000000
+      cpu_usage{host="c",region="eu-west"} 0 1779000000000
+
+queries:
+  - path: /api/v1/label/host/values
+    params: {}
+    compare: semantic_set
+  - path: /api/v1/label/region/values
+    params: {}
+    compare: semantic_set
+
+on_disk:
+  compare_after: none

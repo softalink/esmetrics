@@ -1,0 +1,28 @@
+[package]
+name = "esm-backup"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Snapshot-based incremental backup + restore (bidirectional compat with vmbackup / vmrestore v1.144.0)."
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "esm-backup"
+path = "src/main.rs"
+
+[dependencies]
+esm-common = { workspace = true }
+esm-objstore = { workspace = true }
+esm-storage = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

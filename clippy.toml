@@ -1,0 +1,25 @@
+avoid-breaking-exported-api = false
+msrv = "1.93.0"
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+# Identifiers that should NOT trigger clippy::doc_markdown (which otherwise
+# wants every CamelCase token to be backticked in doc comments).
+doc-valid-idents = [
+    # Defaults inherited from clippy itself (must be re-listed when overriding)
+    "CoreFoundation", "CoreGraphics", "CoreText", "CPython",
+    "DirectX", "ECMAScript", "FreeBSD", "GitHub", "GitLab", "IPv4", "IPv6",
+    "ClojureScript", "CoffeeScript", "JavaScript", "PostScript",
+    "PureScript", "TypeScript", "WebAssembly", "NaN", "NaNs", "OAuth",
+    "GraphQL", "OCaml", "OpenAL", "OpenDNS", "OpenGL", "OpenMP", "OpenSSH",
+    "OpenSSL", "OpenStreetMap", "OpenTelemetry", "WebGL", "WebGL2", "WebGPU",
+    "TensorFlow", "TrueType", "iOS", "macOS", "FreeBSD", "TeX", "LaTeX",
+    "BibTeX", "BibLaTeX", "MinGW", "CamelCase",
+    # Project-specific
+    "EsMetrics", "VictoriaMetrics", "MetricsQL", "PromQL",
+    "vmsingle", "vmagent", "vmalert", "vmauth", "vmbackup", "vmrestore",
+    "vmctl", "vmui", "IndexDB",
+    "OpenTSDB", "DataDog", "NewRelic", "AlertManager", "Alertmanager",
+    "Tokio", "Apache",
+]

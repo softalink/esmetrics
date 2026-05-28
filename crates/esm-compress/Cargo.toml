@@ -1,0 +1,20 @@
+[package]
+name = "esm-compress"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Time-series compression codecs (Gorilla XOR, delta-of-delta) and block-level wrappers (zstd, snap, lz4)."
+
+[lints]
+workspace = true
+
+[dependencies]
+esm-common = { workspace = true }
+thiserror = { workspace = true }
+zstd = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

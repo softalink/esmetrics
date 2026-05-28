@@ -1,0 +1,27 @@
+EsMetrics
+Copyright 2026 The EsMetrics Authors
+
+This product is licensed under the Apache License, Version 2.0 (see the LICENSE file).
+
+================================================================================
+Acknowledgements
+================================================================================
+
+EsMetrics is an independent Rust reimplementation of single-node functionality
+from VictoriaMetrics (https://github.com/VictoriaMetrics/VictoriaMetrics), and is
+compatibility-pinned to upstream tag v1.144.0.
+
+EsMetrics shares no original source code with VictoriaMetrics. Algorithmic and
+on-disk format compatibility were achieved through clean reimplementation under
+the Apache License, Version 2.0. VictoriaMetrics is referenced as design and
+specification source material under the same license.
+
+VictoriaMetrics is Copyright (c) VictoriaMetrics Inc., licensed under the
+Apache License, Version 2.0. See:
+  https://github.com/VictoriaMetrics/VictoriaMetrics/blob/master/LICENSE
+
+"VictoriaMetrics" is a trademark of VictoriaMetrics Inc. EsMetrics is not
+affiliated with, endorsed by, or sponsored by VictoriaMetrics Inc.
+
+See CREDITS.md for detailed attribution of upstream projects, vendored assets,
+and significant third-party dependencies.

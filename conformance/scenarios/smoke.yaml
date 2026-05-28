@@ -1,0 +1,19 @@
+name: smoke
+description: Round-trip a single Prom text-exposition sample and read it back via /api/v1/query.
+
+ingest:
+  - protocol: prom-text
+    inline: |
+      # Smallest possible payload: one series, one sample. The 2026 timestamp
+      # is necessary because VM rejects samples outside its retention window.
+      up{instance="localhost:9090",job="prometheus"} 1 1779000000000
+
+queries:
+  - path: /api/v1/query
+    params:
+      query: up
+      time: "1779000001"
+    compare: semantic_set
+
+on_disk:
+  compare_after: none

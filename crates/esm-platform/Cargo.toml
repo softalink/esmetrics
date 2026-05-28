@@ -1,0 +1,33 @@
+[package]
+name = "esm-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Cross-platform OS abstractions for EsMetrics (mmap, fsync, file locks, signals, paths)."
+
+[lints]
+workspace = true
+
+[dependencies]
+memmap2 = { workspace = true }
+fs2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["signal", "sync", "rt", "macros"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, features = ["fs", "resource", "signal"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+    "Win32_System_Console",
+] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "signal", "time"] }

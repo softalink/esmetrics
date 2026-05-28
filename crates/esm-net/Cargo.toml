@@ -1,0 +1,17 @@
+[package]
+name = "esm-net"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "HTTP/HTTPS server scaffolding (axum/hyper), TLS termination via rustls, and common middleware (logging, auth, metrics)."
+
+[lints]
+workspace = true
+
+[dependencies]
+esm-common = { workspace = true }
+
+[dev-dependencies]

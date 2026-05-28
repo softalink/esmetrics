@@ -1,0 +1,14 @@
+name: binary_arithmetic
+description: Scalar binary expression returns the same number on both backends.
+
+ingest: []
+
+queries:
+  - path: /api/v1/query
+    params:
+      query: "2 + 3 * 4"
+      time: "1779000001"
+    compare: semantic_set
+
+on_disk:
+  compare_after: none

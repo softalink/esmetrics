@@ -1,0 +1,7 @@
+edition = "2024"
+max_width = 100
+use_small_heuristics = "Max"
+reorder_imports = true
+newline_style = "Unix"
+# `imports_granularity = "Crate"` and `group_imports = "StdExternalCrate"` are
+# nightly-only; enable when we move parts of CI to nightly fmt.

@@ -1,0 +1,33 @@
+[package]
+name = "esm-discovery"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Service discovery backends. v1.0 ships Tier 1 (static + file_sd); others land in v1.x behind feature gates."
+
+[lints]
+workspace = true
+
+[features]
+default = ["sd-static", "sd-file"]
+sd-static = []
+sd-file = []
+# Tier 2+ backends added in v1.x:
+# sd-kubernetes = []
+# sd-consul = []
+# sd-ec2 = []
+# sd-gce = []
+# sd-azure = []
+# sd-dns = []
+# sd-http = []
+# sd-dockerswarm = []
+# sd-nomad = []
+# sd-kuma = []
+
+[dependencies]
+esm-common = { workspace = true }
+
+[dev-dependencies]

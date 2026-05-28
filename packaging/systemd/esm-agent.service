@@ -1,0 +1,19 @@
+[Unit]
+Description=EsMetrics scrape + remote-write agent (drop-in for vmagent)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=esmetrics
+Group=esmetrics
+ExecStart=/usr/local/bin/esm-agent \
+    --config=/etc/esmetrics/promscrape.yml \
+    --remote-write-url=http://127.0.0.1:8428 \
+    --queue-dir=/var/lib/esmetrics/agent-queue
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

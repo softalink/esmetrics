@@ -1,0 +1,20 @@
+name: series_metadata
+description: Ingest a small series and confirm series/label endpoints agree across VM and esm.
+
+ingest:
+  - protocol: prom-text
+    inline: |
+      up{instance="host:9100",job="node"} 1 1779000000000
+      up{instance="host:9090",job="prometheus"} 1 1779000000000
+
+queries:
+  - path: /api/v1/series
+    params:
+      "match[]": up
+    compare: semantic_set
+  - path: /api/v1/labels
+    params: {}
+    compare: semantic_set
+
+on_disk:
+  compare_after: none

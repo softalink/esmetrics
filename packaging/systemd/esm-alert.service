@@ -1,0 +1,19 @@
+[Unit]
+Description=EsMetrics alert evaluator (drop-in for vmalert)
+After=network-online.target esm-single.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=esmetrics
+Group=esmetrics
+ExecStart=/usr/local/bin/esm-alert \
+    --rule-file=/etc/esmetrics/rules.yml \
+    --datasource-url=http://127.0.0.1:8428 \
+    --alertmanager-url=http://127.0.0.1:9093
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,33 @@
+[package]
+name = "esm-alert"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Alerting + recording rule evaluator (drop-in for vmalert v1.144.0)."
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "esm-alert"
+path = "src/main.rs"
+
+[dependencies]
+esm-alerting = { workspace = true }
+esm-common = { workspace = true }
+esm-net = { workspace = true }
+esm-platform = { workspace = true }
+esm-promql = { workspace = true }
+esm-storage = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time", "sync"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

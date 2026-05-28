@@ -1,0 +1,36 @@
+[package]
+name = "esm-single"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Single-node EsMetrics binary (drop-in for VictoriaMetrics vmsingle v1.144.0)."
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "esm-single"
+path = "src/main.rs"
+
+[dependencies]
+esm-common = { workspace = true }
+esm-net = { workspace = true }
+esm-platform = { workspace = true }
+esm-protocols = { workspace = true }
+esm-promql = { workspace = true }
+esm-storage = { workspace = true }
+esm-vmui = { workspace = true }
+anyhow = { workspace = true }
+axum = { workspace = true }
+bytes = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_urlencoded = "0.7"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "net", "sync"] }
+tower = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

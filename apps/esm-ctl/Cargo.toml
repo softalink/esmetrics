@@ -1,0 +1,23 @@
+[package]
+name = "esm-ctl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Migration / inspection / data-movement CLI (drop-in for vmctl v1.144.0). Implemented in late phases."
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "esm-ctl"
+path = "src/main.rs"
+
+[dependencies]
+esm-common = { workspace = true }
+esm-storage = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }

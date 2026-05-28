@@ -1,0 +1,34 @@
+[package]
+name = "esm-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Scraping + relabeling + remote-write fanout agent (drop-in for vmagent v1.144.0)."
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "esm-agent"
+path = "src/main.rs"
+
+[dependencies]
+esm-common = { workspace = true }
+esm-discovery = { workspace = true }
+esm-net = { workspace = true }
+esm-platform = { workspace = true }
+esm-protocols = { workspace = true }
+esm-scrape = { workspace = true }
+regex = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time", "sync"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

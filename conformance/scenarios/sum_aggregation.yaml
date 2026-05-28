@@ -1,0 +1,25 @@
+name: sum_aggregation
+description: Ingest multiple series and confirm sum() returns the right total on both sides.
+
+ingest:
+  - protocol: prom-text
+    inline: |
+      requests_total{job="api",code="200"} 30 1779000000000
+      requests_total{job="api",code="500"} 5 1779000000000
+      requests_total{job="api",code="404"} 12 1779000000000
+      requests_total{job="web",code="200"} 100 1779000000000
+
+queries:
+  - path: /api/v1/query
+    params:
+      query: sum(requests_total)
+      time: "1779000001"
+    compare: semantic_set
+  - path: /api/v1/query
+    params:
+      query: sum by (job) (requests_total)
+      time: "1779000001"
+    compare: semantic_set
+
+on_disk:
+  compare_after: none

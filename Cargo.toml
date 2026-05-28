@@ -1,0 +1,139 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/esm-platform",
+    "crates/esm-common",
+    "crates/esm-compress",
+    "crates/esm-storage",
+    "crates/esm-promql",
+    "crates/esm-protocols",
+    "crates/esm-scrape",
+    "crates/esm-discovery",
+    "crates/esm-alerting",
+    "crates/esm-net",
+    "crates/esm-objstore",
+    "crates/esm-vmui",
+    "apps/esm-single",
+    "apps/esm-agent",
+    "apps/esm-alert",
+    "apps/esm-auth",
+    "apps/esm-backup",
+    "apps/esm-ctl",
+    "conformance/harness",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0-pre"
+edition = "2024"
+rust-version = "1.93"
+license = "Apache-2.0"
+authors = ["The EsMetrics Authors"]
+repository = "https://github.com/esmetrics/esmetrics"
+homepage = "https://github.com/esmetrics/esmetrics"
+description = "Drop-in single-node VictoriaMetrics-compatible time-series database, written in Rust."
+
+[workspace.dependencies]
+# Internal crates ----------------------------------------------------------
+esm-platform = { path = "crates/esm-platform" }
+esm-common = { path = "crates/esm-common" }
+esm-compress = { path = "crates/esm-compress" }
+esm-storage = { path = "crates/esm-storage" }
+esm-promql = { path = "crates/esm-promql" }
+esm-protocols = { path = "crates/esm-protocols" }
+esm-scrape = { path = "crates/esm-scrape" }
+esm-discovery = { path = "crates/esm-discovery" }
+esm-alerting = { path = "crates/esm-alerting" }
+esm-net = { path = "crates/esm-net" }
+esm-objstore = { path = "crates/esm-objstore" }
+esm-vmui = { path = "crates/esm-vmui" }
+
+# External crates ----------------------------------------------------------
+# Pinned at first-use; entries land here as the workspace grows.
+anyhow = "1"
+thiserror = "2"
+memmap2 = "0.9"
+fs2 = "0.4"
+tokio = { version = "1", default-features = false }
+nix = { version = "0.29", default-features = false }
+windows-sys = { version = "0.59", default-features = false }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+zstd = "0.13"
+axum = "0.7"
+hyper = "1"
+tower = "0.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+bytes = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+prost = "0.13"
+snap = "1"
+regex = "1"
+criterion = { version = "0.5", default-features = false }
+proptest = { version = "1", default-features = false, features = ["std"] }
+sha2 = "0.10"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Pedantic lints we accept noise from:
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+similar_names = "allow"
+doc_markdown = "allow"  # we won't chase backticking every product name
+# Disallow these regardless of pedantic:
+unwrap_used = "warn"
+expect_used = "warn"
+todo = "warn"
+unimplemented = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = 1
+strip = "debuginfo"
+opt-level = 3
+overflow-checks = false
+
+[profile.release-with-debug]
+inherits = "release"
+debug = "full"
+strip = "none"
+
+[profile.bench]
+inherits = "release"
+debug = "full"
+strip = "none"
+
+[profile.dev]
+opt-level = 0
+debug = "full"
+
+# Profile-guided optimization build. Two-pass: first build under
+# `release-pgo-generate` (produces an instrumented binary that writes
+# profile data to `target/pgo-data/`), then exercise the workload, then
+# build again under `release-pgo-use` to consume the profiles.
+# See docs/build-pgo.md for the runbook.
+[profile.release-pgo-generate]
+inherits = "release"
+debug = 1
+strip = "none"
+
+[profile.release-pgo-use]
+inherits = "release"
+debug = 1
+strip = "none"

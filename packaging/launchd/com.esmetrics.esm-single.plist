@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.esmetrics.esm-single</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/esm-single</string>
+        <string>--storage-data-path=/usr/local/var/esmetrics</string>
+        <string>--http-listen-addr=127.0.0.1:8428</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/usr/local/var/log/esm-single.log</string>
+    <key>StandardErrorPath</key>
+    <string>/usr/local/var/log/esm-single.err</string>
+    <key>WorkingDirectory</key>
+    <string>/usr/local/var/esmetrics</string>
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>1048576</integer>
+    </dict>
+</dict>
+</plist>

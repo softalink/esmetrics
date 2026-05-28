@@ -1,0 +1,24 @@
+[package]
+name = "esm-vmui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Embeds the upstream VictoriaMetrics React UI (vmui) as static assets, unchanged."
+
+[lints]
+workspace = true
+
+[dependencies]
+esm-common = { workspace = true }
+
+[build-dependencies]
+# Build script downloads + sha256-verifies the vmui static bundle from upstream
+# VictoriaMetrics v1.144.0 release artefacts at compile time. Vendored copy
+# under `vendor/vmui/` is used when the network is unavailable. Crate deps
+# pinned in Phase 0.6 (conformance harness skeleton) once we lock the source
+# URL + checksum.
+
+[dev-dependencies]
