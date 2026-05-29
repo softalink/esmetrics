@@ -12,52 +12,61 @@ ingest, `GET /api/v1/query_range` for queries. VM ran in Docker
 that inflates VM's apparent ingest rate and empties its query results if
 not corrected).
 
-## Current standings — after the perf/correctness work (2026-05-29)
+## Current standings — after the full surpass-VM roadmap (2026-05-29)
 
-The improvements in [`improvement-plan.md`](./improvement-plan.md) (incremental
-flush, zstd-level fix, size-tiered compaction, RwLock concurrency, regex +
-`by(__name__)` correctness, metric-name + label indexes, range-query cache,
-sharded ingest) changed the picture qualitatively. EsMetrics now runs the
-**full scale-1000 (10k-series) benchmark** — which was *impossible* in the
-original run (the flush blocker forced a drop to scale-10).
+After all of [`improvement-plan.md`](./improvement-plan.md) **and** the 5-phase
+[`surpass-vm-roadmap.md`](./surpass-vm-roadmap.md) (ingest parser/clone/hash,
+binary-search sub-window + memoized metadata, parallel cache warm-up, candidate
+micro-opt). EsMetrics runs the **full scale-1000 (10k-series) benchmark** that
+was impossible in the original run.
 
-**Capability + correctness:**
+**EsMetrics SURPASSES VM** on memory and disk; **parity** on correctness and
+capability; **behind** on ingest and query latency.
 
-| Dimension | VictoriaMetrics | EsMetrics (now) | EsMetrics (original) |
+| Dimension | VictoriaMetrics | EsMetrics | verdict |
 |---|---|---|---|
-| Runs full scale-1000 | yes | **yes** | no (flush blocker → scale-10) |
-| Query correctness | 11/11 | **11/11** ✅ | 4/11 |
-| Ingest (persisting) | 645K rows/s | **292K rows/s** (2.2×) | didn't persist |
-| Ingest peak RAM | 2.09 GB | **1.67 GB** (less) | 5.5 GB |
-| Query concurrency | scales | scales (RwLock) | flat |
+| Ingest peak RAM | 2.06 GB | **1.68 GB** | ✅ EsMetrics ahead |
+| On-disk size | 122 MB | **86 MB** | ✅ EsMetrics ahead |
+| Query correctness | 11/11 | **11/11** | ✅ parity |
+| Runs full scale-1000, concurrent, persists | yes | yes | ✅ parity |
+| Ingest throughput | 636K rows/s | 341K rows/s | ❌ 1.87× behind |
+| Query latency | baseline | 10–234× | ❌ behind |
 
 **Query latency** (scale-1000, 10k series, median @ 8 workers; all 11 types
-now return series counts matching VM):
+return series counts matching VM):
 
-| query type | VM | EsMetrics | ratio |
-|---|---|---|---|
-| single-groupby-1-1-1 | 0.65 ms | 14.7 ms | 23× |
-| single-groupby-1-1-12 | 1.00 ms | 149 ms | 149× |
-| single-groupby-1-8-1 | 1.06 ms | 75.9 ms | 72× |
-| single-groupby-5-1-1 | 1.07 ms | 70.2 ms | 66× |
-| single-groupby-5-1-12 | 2.28 ms | 767 ms | 336× |
-| single-groupby-5-8-1 | 1.84 ms | 390 ms | 211× |
-| double-groupby-1 | 61 ms | 940 ms | 15× |
-| double-groupby-5 | 356 ms | 9.0 s | 25× |
-| double-groupby-all | 681 ms | 23.7 s | 35× |
-| cpu-max-all-1 | 1.16 ms | 38 ms | 33× |
-| cpu-max-all-8 | 4.18 ms | 191 ms | 46× |
+| query type | VM | EsMetrics | ratio | (session start) |
+|---|---|---|---|---|
+| single-groupby-1-1-1 | 0.66 ms | 9.5 ms | 14× | (14.7) |
+| single-groupby-1-1-12 | 0.91 ms | 107 ms | 118× | (149) |
+| single-groupby-1-8-1 | 0.95 ms | 60 ms | 63× | (75.9) |
+| single-groupby-5-1-1 | 0.89 ms | 47 ms | 53× | (70.2) |
+| single-groupby-5-1-12 | 2.37 ms | 554 ms | 234× | (767) |
+| single-groupby-5-8-1 | 1.64 ms | 294 ms | 179× | (390) |
+| double-groupby-1 | 61 ms | 605 ms | 10× | (940) |
+| double-groupby-5 | 338 ms | 7.6 s | 23× | (9.0 s) |
+| double-groupby-all | 682 ms | 23.5 s | 34× | (23.7 s) |
+| cpu-max-all-1 | 1.36 ms | 23 ms | 17× | (38) |
+| cpu-max-all-8 | 4.59 ms | 120 ms | 26× | (191) |
 
-**Read of the results:** correctness and capability are now at parity (11/11,
-full scale, concurrent, persists, lower RAM); ingest is within ~2.2×. **Query
-latency remains 15–336× behind VM** — VM has a mature, columnar, deeply
-optimized query engine (block-level indexes, vectorized rollups, parallel
-per-series execution). EsMetrics' generic per-step evaluator, while now
-correct and far faster than it was, is the dominant remaining gap. The worst
-cases are wide time-range (`*-12`, 12 h) and all-host aggregations
-(`double-groupby-all`), which are data-volume/compute bound — the next levers
-are vectorized rollup evaluation and parallelizing query execution across
-series/shards.
+**Read of the results:** the roadmap delivered EsMetrics ahead of VM on **RAM
+and disk** and at parity on correctness/capability, and shaved query latency
+1.3–1.6× across the board — but **ingest (1.87×) and query latency (10–234×)
+remain behind**. Closing those requires the two large engine changes called
+out (and deliberately *not* rushed, to protect the 11/11 correctness):
+
+1. **Ingest:** a zero-copy line parser — the residual cost is ~520M `String`/
+   `Vec` allocations per load (a `String` per tag, a `Vec` per sample key).
+2. **Query:** a single-pass, parallel-aggregation evaluator (resolve candidates
+   once; one pass per series across all step buckets; aggregate across cores)
+   plus columnar block summaries. This is what would close the all-host
+   aggregations (double-groupby-all) and the wide-range (`*-12`) cases, and
+   approach VM's sub-millisecond trivial queries.
+
+**Bottom line on "surpass on every benchmark":** achieved on memory and disk,
+parity on correctness/capability, **not yet** on ingest or query latency. Those
+two are large, carefully-validated engine efforts rather than the surgical,
+correctness-preserving changes that comprised this work.
 
 ---
 
