@@ -6,6 +6,7 @@
 use std::fs::File;
 use std::io::{self, Read as _, Seek as _, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use esm_compress::timeseries as ts_codec;
 use esm_compress::zstd_codec::{ZstdError, decompress_zstd};
@@ -32,7 +33,7 @@ pub struct DecodedBlock {
 pub struct BlockStreamReader {
     path: PathBuf,
     pub part_header: PartHeader,
-    metaindex_rows: Vec<MetaindexRow>,
+    metaindex_rows: Arc<Vec<MetaindexRow>>,
 
     index_file: File,
     timestamps_file: File,
@@ -64,13 +65,30 @@ impl BlockStreamReader {
         let mut metaindex_rows = Vec::new();
         unmarshal_metaindex_rows(&mut metaindex_rows, &metaindex_raw)?;
 
+        Self::open_with_index(path, part_header, Arc::new(metaindex_rows))
+    }
+
+    /// Open a part reusing an already-parsed header and metaindex (cached by
+    /// the caller), so repeated reads of the same part skip re-reading and
+    /// re-decompressing `metadata`/`metaindex` — only the three data files are
+    /// opened. The hot query path opens each overlapping part once per series,
+    /// so this avoids a JSON parse + zstd decompress per series read.
+    ///
+    /// # Errors
+    /// Returns [`ReadError`] if the index/timestamps/values files can't open.
+    pub fn open_with_index(
+        path: impl Into<PathBuf>,
+        part_header: PartHeader,
+        metaindex_rows: Arc<Vec<MetaindexRow>>,
+    ) -> Result<Self, ReadError> {
+        let path = path.into();
         Ok(Self {
-            path: path.clone(),
-            part_header,
-            metaindex_rows,
             index_file: File::open(path.join(INDEX))?,
             timestamps_file: File::open(path.join(TIMESTAMPS))?,
             values_file: File::open(path.join(VALUES))?,
+            path,
+            part_header,
+            metaindex_rows,
             metaindex_idx: 0,
             cur_index_block: Vec::new(),
             cur_index_idx: 0,
@@ -79,6 +97,13 @@ impl BlockStreamReader {
             scratch_ts_payload: Vec::new(),
             scratch_v_payload: Vec::new(),
         })
+    }
+
+    /// Shared handle to this part's parsed metaindex, for caching in
+    /// `parts_index` and reuse via [`Self::open_with_index`].
+    #[must_use]
+    pub fn metaindex(&self) -> Arc<Vec<MetaindexRow>> {
+        Arc::clone(&self.metaindex_rows)
     }
 
     /// Yield the next decoded block. `Ok(None)` at end-of-part.

@@ -25,8 +25,10 @@ use esm_platform::file_lock::FileLock;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use std::sync::Arc;
+
 use crate::timeseries::{
-    self, BlockStreamReader, BlockStreamWriter, Tsid,
+    self, BlockStreamReader, BlockStreamWriter, MetaindexRow, PartHeader, Tsid,
     block_stream_writer::{DEFAULT_PRECISION_BITS, DEFAULT_SCALE},
 };
 
@@ -132,12 +134,37 @@ pub struct StoredSample {
 pub type KeyedEntry = (std::ops::Range<usize>, i64, i64);
 
 /// Cached metadata for one on-disk part. Lets queries prune parts by time
-/// range without a `read_dir` + part-header open per call.
+/// range without a `read_dir` + part-header open per call, and reuse the
+/// parsed header + metaindex so a per-series read opens only the data files
+/// (no metadata-JSON parse or metaindex zstd-decompress per read).
 #[derive(Debug, Clone)]
 struct PartMeta {
     path: PathBuf,
     min_ts: i64,
     max_ts: i64,
+    header: PartHeader,
+    metaindex: Arc<Vec<MetaindexRow>>,
+}
+
+impl PartMeta {
+    /// Build a `PartMeta` from an opened reader, caching its header +
+    /// metaindex for reuse by [`BlockStreamReader::open_with_index`].
+    fn from_reader(path: PathBuf, reader: &BlockStreamReader) -> Self {
+        Self {
+            min_ts: reader.part_header.min_timestamp,
+            max_ts: reader.part_header.max_timestamp,
+            header: reader.part_header.clone(),
+            metaindex: reader.metaindex(),
+            path,
+        }
+    }
+
+    /// Open `path` once to load and cache its header + metaindex.
+    fn load(path: PathBuf) -> Result<Self, StorageError> {
+        let reader = BlockStreamReader::open(&path)
+            .map_err(|e| StorageError::OpenPart { path: path.clone(), source: e })?;
+        Ok(Self::from_reader(path, &reader))
+    }
 }
 
 /// Read-only series source consumed by the query evaluator. Implemented by
@@ -509,11 +536,7 @@ impl Storage {
             // Discover TSIDs in this part.
             let mut reader = BlockStreamReader::open(&part_path)
                 .map_err(|e| StorageError::OpenPart { path: part_path.clone(), source: e })?;
-            self.parts_index.push(PartMeta {
-                path: part_path.clone(),
-                min_ts: reader.part_header.min_timestamp,
-                max_ts: reader.part_header.max_timestamp,
-            });
+            self.parts_index.push(PartMeta::from_reader(part_path.clone(), &reader));
             while let Some(block) = reader
                 .next_block()
                 .map_err(|e| StorageError::ReadPart { path: part_path.clone(), source: e })?
@@ -695,14 +718,10 @@ impl Storage {
                     .map_err(|e| StorageError::WriteBlock { path: part_path.clone(), source: e })?;
             }
         }
-        let header = writer
+        writer
             .finish()
             .map_err(|e| StorageError::FinishPart { path: part_path.clone(), source: e })?;
-        self.parts_index.push(PartMeta {
-            path: part_path,
-            min_ts: header.min_timestamp,
-            max_ts: header.max_timestamp,
-        });
+        self.parts_index.push(PartMeta::load(part_path)?);
         // Opportunistically merge small parts. Keeps part count bounded so
         // read amplification stays sane.
         self.maybe_merge_small_parts()?;
@@ -802,7 +821,7 @@ impl Storage {
                     .map_err(|e| StorageError::WriteBlock { path: out_path.clone(), source: e })?;
             }
         }
-        let header = writer
+        writer
             .finish()
             .map_err(|e| StorageError::FinishPart { path: out_path.clone(), source: e })?;
         // Remove input parts only after the output is fsynced.
@@ -812,11 +831,7 @@ impl Storage {
         esm_platform::durability::fsync_dir(&self.parts_dir)?;
         // Keep the parts cache consistent: drop merged inputs, add the output.
         self.parts_index.retain(|m| !parts.contains(&m.path));
-        self.parts_index.push(PartMeta {
-            path: out_path,
-            min_ts: header.min_timestamp,
-            max_ts: header.max_timestamp,
-        });
+        self.parts_index.push(PartMeta::load(out_path)?);
         Ok(())
     }
 
@@ -1017,8 +1032,13 @@ impl Storage {
                 continue;
             }
             let part_path = &meta.path;
-            let mut reader = BlockStreamReader::open(part_path)
-                .map_err(|e| StorageError::OpenPart { path: part_path.clone(), source: e })?;
+            // Reuse the cached header + metaindex; opens only the data files.
+            let mut reader = BlockStreamReader::open_with_index(
+                part_path,
+                meta.header.clone(),
+                Arc::clone(&meta.metaindex),
+            )
+            .map_err(|e| StorageError::OpenPart { path: part_path.clone(), source: e })?;
             // Fast-forward to the index block whose start tsid <= target.
             reader.seek_to_tsid(tsid);
             while let Some(header) = reader
