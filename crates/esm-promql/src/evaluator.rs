@@ -149,12 +149,35 @@ struct RangeCache<'a, S: QueryStore> {
     lo: i64,
     hi: i64,
     series: std::cell::RefCell<std::collections::HashMap<Vec<u8>, Vec<StoredSample>>>,
+    /// Total samples currently memoized; bounds per-query memory.
+    cached_samples: std::cell::Cell<usize>,
 }
 
 impl<'a, S: QueryStore> RangeCache<'a, S> {
+    /// Stop memoizing new series once this many samples are cached (~256 MB at
+    /// 16 bytes/sample). Series beyond the cap are served per-step from the
+    /// inner store — slower for those, but memory stays bounded.
+    const MAX_CACHED_SAMPLES: usize = 16_000_000;
+
     fn new(inner: &'a S, lo: i64, hi: i64) -> Self {
-        Self { inner, lo, hi, series: std::cell::RefCell::new(std::collections::HashMap::new()) }
+        Self {
+            inner,
+            lo,
+            hi,
+            series: std::cell::RefCell::new(std::collections::HashMap::new()),
+            cached_samples: std::cell::Cell::new(0),
+        }
     }
+}
+
+fn filter_range(samples: &[StoredSample], range: TimeRange) -> Vec<StoredSample> {
+    samples
+        .iter()
+        .copied()
+        .filter(|s| {
+            s.timestamp_ms >= range.min_timestamp_ms && s.timestamp_ms <= range.max_timestamp_ms
+        })
+        .collect()
 }
 
 impl<S: QueryStore> QueryStore for RangeCache<'_, S> {
@@ -167,22 +190,23 @@ impl<S: QueryStore> QueryStore for RangeCache<'_, S> {
         metric_name: &[u8],
         range: TimeRange,
     ) -> Result<Vec<StoredSample>, StorageError> {
-        if !self.series.borrow().contains_key(metric_name) {
+        // Cache hit: serve the requested sub-window from the memoized buffer.
+        if let Some(all) = self.series.borrow().get(metric_name) {
+            return Ok(filter_range(all, range));
+        }
+        // Miss and still under budget: read the whole window once and memoize.
+        if self.cached_samples.get() < Self::MAX_CACHED_SAMPLES {
             let full = self.inner.search_by_metric_name(
                 metric_name,
                 TimeRange { min_timestamp_ms: self.lo, max_timestamp_ms: self.hi },
             )?;
+            self.cached_samples.set(self.cached_samples.get() + full.len());
+            let out = filter_range(&full, range);
             self.series.borrow_mut().insert(metric_name.to_vec(), full);
+            return Ok(out);
         }
-        let cache = self.series.borrow();
-        let all = &cache[metric_name];
-        Ok(all
-            .iter()
-            .copied()
-            .filter(|s| {
-                s.timestamp_ms >= range.min_timestamp_ms && s.timestamp_ms <= range.max_timestamp_ms
-            })
-            .collect())
+        // Over budget: bypass the cache, fetch only the requested window.
+        self.inner.search_by_metric_name(metric_name, range)
     }
 
     fn lookup_tsid(&self, metric_name: &[u8]) -> Option<Tsid> {
