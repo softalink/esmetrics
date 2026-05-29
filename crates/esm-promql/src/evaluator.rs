@@ -139,6 +139,31 @@ fn max_selector_range(expr: &Expr) -> i64 {
     }
 }
 
+/// Collect every vector selector in `expr` (for parallel cache warm-up).
+fn collect_selectors<'a>(expr: &'a Expr, out: &mut Vec<&'a crate::ast::VectorSelector>) {
+    match expr {
+        Expr::VectorSelector(s) => out.push(s),
+        Expr::Paren(e) | Expr::Unary(_, e) => collect_selectors(e, out),
+        Expr::Binary(b) => {
+            collect_selectors(&b.lhs, out);
+            collect_selectors(&b.rhs, out);
+        }
+        Expr::Aggregation(a) => {
+            collect_selectors(&a.arg, out);
+            if let Some(p) = &a.param {
+                collect_selectors(p, out);
+            }
+        }
+        Expr::FunctionCall(fc) => {
+            for a in &fc.args {
+                collect_selectors(a, out);
+            }
+        }
+        Expr::Subquery(sq) => collect_selectors(&sq.inner, out),
+        Expr::NumberLiteral(_) | Expr::StringLiteral(_) => {}
+    }
+}
+
 /// Per-query read cache wrapping a [`QueryStore`]. The first
 /// `search_by_metric_name` for a series reads the whole preload window once and
 /// memoizes it; later step queries are served from that buffer (filtered to the
@@ -158,12 +183,12 @@ struct RangeCache<'a, S: QueryStore> {
     distinct: std::cell::RefCell<Option<Vec<Vec<u8>>>>,
 }
 
-impl<'a, S: QueryStore> RangeCache<'a, S> {
-    /// Stop memoizing new series once this many samples are cached (~256 MB at
-    /// 16 bytes/sample). Series beyond the cap are served per-step from the
-    /// inner store — slower for those, but memory stays bounded.
-    const MAX_CACHED_SAMPLES: usize = 16_000_000;
+/// Stop memoizing new series once this many samples are cached (~256 MB at
+/// 16 bytes/sample). Series beyond the cap are served per-step from the inner
+/// store — slower for those, but memory stays bounded.
+const MAX_CACHED_SAMPLES: usize = 16_000_000;
 
+impl<'a, S: QueryStore> RangeCache<'a, S> {
     fn new(inner: &'a S, lo: i64, hi: i64) -> Self {
         Self {
             inner,
@@ -203,7 +228,7 @@ impl<S: QueryStore> QueryStore for RangeCache<'_, S> {
             return Ok(filter_range(all, range));
         }
         // Miss and still under budget: read the whole window once and memoize.
-        if self.cached_samples.get() < Self::MAX_CACHED_SAMPLES {
+        if self.cached_samples.get() < MAX_CACHED_SAMPLES {
             let full = self.inner.search_by_metric_name(
                 metric_name,
                 TimeRange { min_timestamp_ms: self.lo, max_timestamp_ms: self.hi },
@@ -252,11 +277,13 @@ impl<S: QueryStore> QueryStore for RangeCache<'_, S> {
 
 pub fn evaluate_range(
     expr: &Expr,
-    storage: &impl QueryStore,
+    storage: &(impl QueryStore + Sync),
     start_ms: i64,
     end_ms: i64,
     step_ms: i64,
 ) -> Result<Vec<RangeVectorElement>, EvalError> {
+    use rayon::prelude::*;
+
     if step_ms <= 0 {
         return Err(EvalError::InvalidStep(step_ms));
     }
@@ -269,7 +296,45 @@ pub fn evaluate_range(
     // the largest `[range]` in the expression plus the instant-selector
     // lookback.
     let preload = max_selector_range(expr).max(EvalContext::DEFAULT_LOOKBACK_MS);
-    let cache = RangeCache::new(storage, start_ms.saturating_sub(preload), end_ms);
+    let lo = start_ms.saturating_sub(preload);
+    let cache = RangeCache::new(storage, lo, end_ms);
+
+    // Warm the cache in parallel: resolve every selector's candidate series and
+    // read their full windows concurrently (reads are pure; the inner store is
+    // `Sync`). The serial evaluation below then runs entirely against the warm
+    // cache — no rollup/aggregation math is duplicated, so results are
+    // identical to the single-threaded path.
+    let mut sels = Vec::new();
+    collect_selectors(expr, &mut sels);
+    let mut names: Vec<Vec<u8>> = Vec::new();
+    for sel in sels {
+        // Narrow to the *true* matches (not just the anchored superset) so a
+        // selector like `{__name__=~..., host=~...}` warms only the series the
+        // query needs, not every series of those metrics.
+        names.extend(
+            candidate_series(storage, sel).into_iter().filter(|n| matches_selector(n, sel)),
+        );
+    }
+    names.sort_unstable();
+    names.dedup();
+    let window = TimeRange { min_timestamp_ms: lo, max_timestamp_ms: end_ms };
+    let read: Vec<(Vec<u8>, Vec<StoredSample>)> = names
+        .into_par_iter()
+        .filter_map(|n| storage.search_by_metric_name(&n, window).ok().map(|s| (n, s)))
+        .collect();
+    {
+        let mut series = cache.series.borrow_mut();
+        let mut total = cache.cached_samples.get();
+        for (n, s) in read {
+            if total + s.len() > MAX_CACHED_SAMPLES {
+                break;
+            }
+            total += s.len();
+            series.insert(n, s);
+        }
+        cache.cached_samples.set(total);
+    }
+
     let storage = &cache;
     let mut by_series: BTreeMap<Vec<u8>, Vec<(i64, f64)>> = BTreeMap::new();
     let mut t = start_ms;
