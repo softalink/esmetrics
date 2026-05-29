@@ -1034,6 +1034,29 @@ struct PromqlRangeParams {
     flush: bool,
 }
 
+/// One series in a matrix result. Serializes directly to the Prometheus shape
+/// `{"metric":{…},"values":[[ts,"v"],…]}` — avoiding a `serde_json::Value`
+/// tree, which for a 10k-series × 12-step result is ~250k heap allocations
+/// built only to be re-serialized.
+#[derive(Serialize)]
+struct RangeSeries {
+    metric: std::collections::BTreeMap<String, String>,
+    values: Vec<(f64, String)>,
+}
+
+#[derive(Serialize)]
+struct RangeData {
+    #[serde(rename = "resultType")]
+    result_type: &'static str,
+    result: Vec<RangeSeries>,
+}
+
+#[derive(Serialize)]
+struct RangeEnvelope {
+    status: &'static str,
+    data: RangeData,
+}
+
 /// `GET /api/v1/promql_range?query=<expr>&start=<sec>&end=<sec>&step=<sec>`
 ///
 /// Prometheus-compatible range query. Returns
@@ -1041,7 +1064,7 @@ struct PromqlRangeParams {
 async fn promql_range(
     State(storage): State<Arc<ShardedStorage>>,
     Query(params): Query<PromqlRangeParams>,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> Result<Json<RangeEnvelope>, AppError> {
     let expr = esm_promql::parser::parse(&params.query)
         .map_err(|e| AppError(anyhow::anyhow!("parse error: {e}")))?;
     let start_ms = seconds_to_ms(params.start);
@@ -1059,26 +1082,23 @@ async fn promql_range(
     let elements = esm_promql::evaluator::evaluate_range(&expr, s, start_ms, end_ms, step_ms)
         .map_err(|e| AppError(anyhow::anyhow!("eval error: {e}")))?;
 
-    let result: Vec<serde_json::Value> = elements
+    let result: Vec<RangeSeries> = elements
         .into_iter()
         .map(|elt| {
             let metric = decode_metric_labels(&elt.metric_name);
-            let values: Vec<serde_json::Value> = elt
+            let values: Vec<(f64, String)> = elt
                 .values
                 .into_iter()
                 .map(|(ts_ms, v)| {
                     #[allow(clippy::cast_precision_loss)]
                     let ts_sec = (ts_ms as f64) / 1000.0;
-                    serde_json::json!([ts_sec, fmt_value(v)])
+                    (ts_sec, fmt_value(v))
                 })
                 .collect();
-            serde_json::json!({ "metric": metric, "values": values })
+            RangeSeries { metric, values }
         })
         .collect();
-    Ok(Json(serde_json::json!({
-        "status": "success",
-        "data": { "resultType": "matrix", "result": result }
-    })))
+    Ok(Json(RangeEnvelope { status: "success", data: RangeData { result_type: "matrix", result } }))
 }
 
 fn seconds_to_ms(sec: f64) -> i64 {
