@@ -47,6 +47,8 @@ pub struct BlockStreamReader {
     scratch_index_unpacked: Vec<u8>,
     scratch_ts_payload: Vec<u8>,
     scratch_v_payload: Vec<u8>,
+    scratch_ts_decoded: Vec<i64>,
+    scratch_v_decoded: Vec<i64>,
 }
 
 impl BlockStreamReader {
@@ -96,6 +98,8 @@ impl BlockStreamReader {
             scratch_index_unpacked: Vec::new(),
             scratch_ts_payload: Vec::new(),
             scratch_v_payload: Vec::new(),
+            scratch_ts_decoded: Vec::new(),
+            scratch_v_decoded: Vec::new(),
         })
     }
 
@@ -165,6 +169,53 @@ impl BlockStreamReader {
         header: &BlockHeader,
     ) -> Result<(Vec<i64>, Vec<i64>), ReadError> {
         self.read_data_block(header)
+    }
+
+    /// Like [`Self::read_data_block_for`] but decodes into reusable internal
+    /// buffers and returns borrowed slices — no per-block `Vec` allocation.
+    /// The slices are valid until the next call that mutates the reader. The
+    /// hot query path decodes thousands of blocks per query, so reusing the
+    /// decode buffers avoids two ~64 KB allocations per block.
+    ///
+    /// # Errors
+    /// See [`ReadError`].
+    pub fn read_data_block_borrowed(
+        &mut self,
+        bh: &BlockHeader,
+    ) -> Result<(&[i64], &[i64]), ReadError> {
+        self.timestamps_file.seek(SeekFrom::Start(bh.timestamps_block_offset))?;
+        let ts_size = usize::try_from(bh.timestamps_block_size)
+            .map_err(|_| ReadError::SizeOverflow(u64::from(bh.timestamps_block_size)))?;
+        self.scratch_ts_payload.resize(ts_size, 0);
+        self.timestamps_file.read_exact(&mut self.scratch_ts_payload)?;
+
+        self.values_file.seek(SeekFrom::Start(bh.values_block_offset))?;
+        let v_size = usize::try_from(bh.values_block_size)
+            .map_err(|_| ReadError::SizeOverflow(u64::from(bh.values_block_size)))?;
+        self.scratch_v_payload.resize(v_size, 0);
+        self.values_file.read_exact(&mut self.scratch_v_payload)?;
+
+        self.scratch_ts_decoded.clear();
+        ts_codec::unmarshal_int64_array(
+            &mut self.scratch_ts_decoded,
+            &self.scratch_ts_payload,
+            bh.timestamps_marshal_type,
+            bh.min_timestamp,
+            bh.rows_count as usize,
+        )
+        .map_err(ReadError::Ts)?;
+
+        self.scratch_v_decoded.clear();
+        ts_codec::unmarshal_int64_array(
+            &mut self.scratch_v_decoded,
+            &self.scratch_v_payload,
+            bh.values_marshal_type,
+            bh.first_value,
+            bh.rows_count as usize,
+        )
+        .map_err(ReadError::Ts)?;
+
+        Ok((&self.scratch_ts_decoded, &self.scratch_v_decoded))
     }
 
     /// Advance the cursor to the first index block whose starting TSID is

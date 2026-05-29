@@ -1059,7 +1059,7 @@ impl Storage {
                     continue;
                 }
                 let (timestamps, values) = reader
-                    .read_data_block_for(&header)
+                    .read_data_block_borrowed(&header)
                     .map_err(|e| StorageError::ReadPart { path: part_path.clone(), source: e })?;
                 for (ts, val) in timestamps.iter().zip(values.iter()) {
                     if *ts >= range.min_timestamp_ms && *ts <= range.max_timestamp_ms {
