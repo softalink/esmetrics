@@ -160,6 +160,11 @@ pub struct Storage {
 
     /// Monotonic part counter for naming.
     next_part_id: u64,
+
+    /// Count of samples currently buffered in `pending`. Drives the
+    /// incremental-flush trigger so memory stays bounded during sustained
+    /// ingest instead of growing until an explicit `flush()`/`shutdown()`.
+    pending_samples: usize,
 }
 
 impl Storage {
@@ -191,6 +196,7 @@ impl Storage {
             index_path,
             index_dirty: false,
             next_part_id: 0,
+            pending_samples: 0,
         };
         storage.load_index()?;
         storage.bootstrap_from_disk()?;
@@ -369,14 +375,24 @@ impl Storage {
     /// # Errors
     /// Currently infallible; the signature reserves room for future
     /// validation (timestamp ordering, label-set parsing).
-    #[allow(clippy::unnecessary_wraps)]
     pub fn ingest(&mut self, samples: &[Sample]) -> Result<(), StorageError> {
         for s in samples {
             let tsid = self.get_or_create_tsid(&s.metric_name);
             self.pending.entry(tsid).or_default().push((s.timestamp_ms, s.value));
         }
+        self.pending_samples += samples.len();
+        // Bound memory: flush once the buffer crosses the threshold. Frequent
+        // small flushes also keep each series short per part, which avoids the
+        // expensive large-series flush path.
+        if self.pending_samples >= Self::FLUSH_THRESHOLD_SAMPLES {
+            self.flush()?;
+        }
         Ok(())
     }
+
+    /// Auto-flush trigger: buffer this many samples before spilling a part.
+    /// ~1M (ts,value) pairs ≈ a few tens of MB of live buffer.
+    const FLUSH_THRESHOLD_SAMPLES: usize = 1_000_000;
 
     fn get_or_create_tsid(&mut self, name: &[u8]) -> Tsid {
         if let Some(t) = self.name_to_tsid.get(name) {
@@ -409,6 +425,7 @@ impl Storage {
 
         // Drain the pending map in TSID order.
         let pending = std::mem::take(&mut self.pending);
+        self.pending_samples = 0;
         for (tsid, mut samples) in pending {
             samples.sort_by_key(|&(ts, _)| ts);
             // Time-series block size is bounded by MAX_ROWS_PER_BLOCK; split
@@ -428,29 +445,35 @@ impl Storage {
         Ok(())
     }
 
-    /// Tunables for the simple merger heuristic. Mirrors VM's idea of "merge
-    /// equal-sized parts" without a full level scheme. When more than
-    /// [`MERGE_THRESHOLD`] parts exist, the [`MERGE_BATCH`] smallest are
-    /// merged into one.
-    const MERGE_THRESHOLD: usize = 8;
-    const MERGE_BATCH: usize = 4;
+    /// Size-tiered compaction tunables. Parts are bucketed by their size tier
+    /// (`floor(log2(bytes))`); a tier is compacted once it holds at least
+    /// [`MERGE_MIN_PARTS`] parts. Merging only *similar-sized* parts keeps a
+    /// given byte from being rewritten more than ~`O(log N)` times, instead of
+    /// the old "merge the 4 smallest on every flush" policy that repeatedly
+    /// re-merged a growing part with tiny new ones (heavy write amplification
+    /// that dominated bulk-ingest cost).
+    const MERGE_MIN_PARTS: usize = 4;
+    /// Cap parts per merge so a single compaction's in-memory working set
+    /// stays bounded regardless of how full a tier gets.
+    const MERGE_MAX_BATCH: usize = 8;
 
-    /// One-shot in-line merger. Idempotent; safe to call after every flush.
-    /// Walks the parts directory, picks up to [`Self::MERGE_BATCH`] of the
-    /// smallest parts when the total exceeds [`Self::MERGE_THRESHOLD`], and
-    /// rewrites them into a single output. Old parts are removed atomically
-    /// (rename-into-trash then unlink) after the new part is fsynced.
+    /// One-shot size-tiered merge. Idempotent; safe to call after every flush.
+    /// Buckets parts by size tier and compacts the smallest tier that has
+    /// accumulated at least [`Self::MERGE_MIN_PARTS`] parts (up to
+    /// [`Self::MERGE_MAX_BATCH`] of them). Old parts are removed only after the
+    /// new part is fsynced.
     ///
     /// # Errors
     /// Returns [`StorageError`] on any I/O failure during read, write, or
     /// removal.
     pub fn maybe_merge_small_parts(&mut self) -> Result<(), StorageError> {
-        let mut parts: Vec<(PathBuf, u64)> = Vec::new();
         let entries = match std::fs::read_dir(&self.parts_dir) {
             Ok(it) => it,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(e) => return Err(e.into()),
         };
+        // Bucket parts by size tier = floor(log2(bytes)).
+        let mut tiers: BTreeMap<u32, Vec<PathBuf>> = BTreeMap::new();
         for entry in entries {
             let entry = entry?;
             if !entry.file_type()?.is_dir() {
@@ -458,16 +481,19 @@ impl Storage {
             }
             let p = entry.path();
             let size = part_byte_size(&p)?;
-            parts.push((p, size));
+            let tier = 64 - size.max(1).leading_zeros();
+            tiers.entry(tier).or_default().push(p);
         }
-        if parts.len() <= Self::MERGE_THRESHOLD {
-            return Ok(());
+        // Compact the smallest tier that has enough parts. Only one tier per
+        // call keeps each post-flush merge cheap; subsequent flushes drain the
+        // rest. `BTreeMap` iterates tiers ascending, so smallest first.
+        for group in tiers.into_values() {
+            if group.len() >= Self::MERGE_MIN_PARTS {
+                let batch: Vec<PathBuf> = group.into_iter().take(Self::MERGE_MAX_BATCH).collect();
+                return self.merge_parts(&batch);
+            }
         }
-        // Pick the smallest MERGE_BATCH parts.
-        parts.sort_by_key(|(_, s)| *s);
-        let to_merge: Vec<PathBuf> =
-            parts.into_iter().take(Self::MERGE_BATCH).map(|(p, _)| p).collect();
-        self.merge_parts(&to_merge)
+        Ok(())
     }
 
     /// Force a merge of `parts` into a single new part. Public so callers
@@ -714,56 +740,73 @@ impl Storage {
         tsid: Tsid,
         range: TimeRange,
     ) -> Result<Vec<StoredSample>, StorageError> {
-        let mut out = Vec::new();
-        let entries = match std::fs::read_dir(&self.parts_dir) {
-            Ok(it) => it,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
-            Err(e) => return Err(e.into()),
-        };
-        for entry in entries {
-            let entry = entry?;
-            if !entry.file_type()?.is_dir() {
-                continue;
-            }
-            let part_path = entry.path();
-            let mut reader = BlockStreamReader::open(&part_path)
-                .map_err(|e| StorageError::OpenPart { path: part_path.clone(), source: e })?;
-            // Quick skip via part-level min/max timestamps.
-            if reader.part_header.max_timestamp < range.min_timestamp_ms
-                || reader.part_header.min_timestamp > range.max_timestamp_ms
-            {
-                continue;
-            }
-            // Fast-forward to the index block whose start tsid <= target.
-            reader.seek_to_tsid(tsid);
-            while let Some(header) = reader
-                .next_block_header()
-                .map_err(|e| StorageError::ReadPart { path: part_path.clone(), source: e })?
-            {
-                // Blocks are sorted by (tsid, min_timestamp). Once we walk
-                // past `tsid` we're done with this part.
-                if header.tsid > tsid {
-                    break;
-                }
-                if header.tsid != tsid {
-                    continue;
-                }
-                if header.max_timestamp < range.min_timestamp_ms
-                    || header.min_timestamp > range.max_timestamp_ms
-                {
-                    continue;
-                }
-                let (timestamps, values) = reader
-                    .read_data_block_for(&header)
-                    .map_err(|e| StorageError::ReadPart { path: part_path.clone(), source: e })?;
-                for (ts, val) in timestamps.iter().zip(values.iter()) {
-                    if *ts >= range.min_timestamp_ms && *ts <= range.max_timestamp_ms {
-                        out.push(StoredSample { timestamp_ms: *ts, value: *val });
+        // Merge on-disk parts and the in-memory pending buffer through a
+        // timestamp-keyed map so a query sees freshly-ingested (unflushed)
+        // data. The map gives ordering + dedup for free; pending is overlaid
+        // last so the newest write wins on identical timestamps.
+        let mut merged: BTreeMap<i64, i64> = BTreeMap::new();
+        match std::fs::read_dir(&self.parts_dir) {
+            Ok(entries) => {
+                for entry in entries {
+                    let entry = entry?;
+                    if !entry.file_type()?.is_dir() {
+                        continue;
+                    }
+                    let part_path = entry.path();
+                    let mut reader = BlockStreamReader::open(&part_path).map_err(|e| {
+                        StorageError::OpenPart { path: part_path.clone(), source: e }
+                    })?;
+                    // Quick skip via part-level min/max timestamps.
+                    if reader.part_header.max_timestamp < range.min_timestamp_ms
+                        || reader.part_header.min_timestamp > range.max_timestamp_ms
+                    {
+                        continue;
+                    }
+                    // Fast-forward to the index block whose start tsid <= target.
+                    reader.seek_to_tsid(tsid);
+                    while let Some(header) = reader.next_block_header().map_err(|e| {
+                        StorageError::ReadPart { path: part_path.clone(), source: e }
+                    })? {
+                        // Blocks are sorted by (tsid, min_timestamp). Once we walk
+                        // past `tsid` we're done with this part.
+                        if header.tsid > tsid {
+                            break;
+                        }
+                        if header.tsid != tsid {
+                            continue;
+                        }
+                        if header.max_timestamp < range.min_timestamp_ms
+                            || header.min_timestamp > range.max_timestamp_ms
+                        {
+                            continue;
+                        }
+                        let (timestamps, values) =
+                            reader.read_data_block_for(&header).map_err(|e| {
+                                StorageError::ReadPart { path: part_path.clone(), source: e }
+                            })?;
+                        for (ts, val) in timestamps.iter().zip(values.iter()) {
+                            if *ts >= range.min_timestamp_ms && *ts <= range.max_timestamp_ms {
+                                merged.insert(*ts, *val);
+                            }
+                        }
                     }
                 }
             }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
         }
-        Ok(out)
+        // Overlay in-memory pending samples for this TSID.
+        if let Some(buf) = self.pending.get(&tsid) {
+            for &(ts, v) in buf {
+                if ts >= range.min_timestamp_ms && ts <= range.max_timestamp_ms {
+                    merged.insert(ts, v);
+                }
+            }
+        }
+        Ok(merged
+            .into_iter()
+            .map(|(timestamp_ms, value)| StoredSample { timestamp_ms, value })
+            .collect())
     }
 
     /// Look up the TSID for an already-ingested metric, if known.
@@ -909,6 +952,88 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "manual micro-benchmark; run with --ignored --nocapture --release"]
+    #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation, clippy::print_stderr)]
+    fn bench_flush_write_scaling() {
+        use std::time::Instant;
+        // Same total points (~2M), different series shapes. Isolates pure
+        // flush-write cost (single part => merger never triggers).
+        for (series, pts) in [(10_000usize, 200usize), (1_000, 2_000), (100, 20_000)] {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut s = Storage::open(tmp.path().join("d")).unwrap();
+            for sidx in 0..series {
+                let tsid = Tsid { metric_id: sidx as u64 + 1, ..Default::default() };
+                // Realistic shape: large epoch-ms timestamps (10s step) and
+                // pseudo-random small values (like cpu %), which don't collapse
+                // to const/delta encodings.
+                s.pending.insert(
+                    tsid,
+                    (0..pts as i64)
+                        .map(|i| {
+                            let ts = 1_704_067_200_000 + i * 10_000;
+                            let v = (i.wrapping_mul(2_654_435_761)).rem_euclid(100);
+                            (ts, v)
+                        })
+                        .collect(),
+                );
+            }
+            s.pending_samples = series * pts;
+            let start = Instant::now();
+            s.flush().unwrap();
+            eprintln!(
+                "FLUSH series={series:>6} pts/series={pts:>6} total={:>9} took={:?}",
+                series * pts,
+                start.elapsed()
+            );
+        }
+    }
+
+    #[test]
+    fn search_sees_unflushed_pending_data() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut s = Storage::open(tmp.path().join("d")).unwrap();
+        s.ingest(&[
+            Sample { metric_name: b"m".to_vec(), timestamp_ms: 100, value: 1 },
+            Sample { metric_name: b"m".to_vec(), timestamp_ms: 200, value: 2 },
+        ])
+        .unwrap();
+        // No flush: query must still see the buffered samples.
+        let hits = s
+            .search_by_metric_name(b"m", TimeRange { min_timestamp_ms: 0, max_timestamp_ms: 1_000 })
+            .unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].timestamp_ms, 100);
+        assert_eq!(hits[1].value, 2);
+    }
+
+    #[test]
+    fn search_merges_disk_and_pending_pending_wins_on_ties() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut s = Storage::open(tmp.path().join("d")).unwrap();
+        // Flushed to disk: ts 100=1, 200=2.
+        s.ingest(&[
+            Sample { metric_name: b"m".to_vec(), timestamp_ms: 100, value: 1 },
+            Sample { metric_name: b"m".to_vec(), timestamp_ms: 200, value: 2 },
+        ])
+        .unwrap();
+        s.flush().unwrap();
+        // Buffered (not flushed): a new ts 300=3, plus an overriding write at ts 200=99.
+        s.ingest(&[
+            Sample { metric_name: b"m".to_vec(), timestamp_ms: 300, value: 3 },
+            Sample { metric_name: b"m".to_vec(), timestamp_ms: 200, value: 99 },
+        ])
+        .unwrap();
+        let hits = s
+            .search_by_metric_name(b"m", TimeRange { min_timestamp_ms: 0, max_timestamp_ms: 1_000 })
+            .unwrap();
+        // Sorted, deduped by timestamp; pending overrides disk at ts 200.
+        assert_eq!(hits.len(), 3);
+        assert_eq!(hits[0].timestamp_ms, 100);
+        assert_eq!((hits[1].timestamp_ms, hits[1].value), (200, 99));
+        assert_eq!((hits[2].timestamp_ms, hits[2].value), (300, 3));
+    }
+
+    #[test]
     fn binary_index_roundtrip_after_reopen() {
         let tmp = tempfile::tempdir().unwrap();
         let d = tmp.path().join("d");
@@ -1035,7 +1160,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let d = tmp.path().join("d");
         let mut s = Storage::open(&d).unwrap();
-        // Push enough flushes to exceed MERGE_THRESHOLD (= 8).
+        // Push enough same-sized flushes to fill a size tier and trigger merges.
         for i in 0..10 {
             s.ingest(&[Sample {
                 metric_name: format!("metric_{i}").into_bytes(),

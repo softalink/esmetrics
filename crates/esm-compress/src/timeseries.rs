@@ -208,13 +208,16 @@ fn ineffective_compression(compressed: usize, plain: usize) -> bool {
 }
 
 fn compress_level_for(items: usize) -> i32 {
-    // VM's getCompressLevel scales with block length:
-    //   >= 8192: 22; >= 512: 10; >= 64: 5; else 1
+    // Mirror VM's `getCompressLevel` (lib/encoding/encoding.go), which caps at
+    // level 5. The previous values (22/10) were a port error: zstd level 22 on
+    // a full 8192-item block is ~100x slower for negligible size gain and made
+    // flushing large series pathologically slow.
     match items {
-        n if n >= 8192 => 22,
-        n if n >= 512 => 10,
-        n if n >= 64 => 5,
-        _ => 1,
+        n if n <= 1 << 6 => 1,
+        n if n <= 1 << 8 => 2,
+        n if n <= 1 << 10 => 3,
+        n if n <= 1 << 12 => 4,
+        _ => 5,
     }
 }
 
