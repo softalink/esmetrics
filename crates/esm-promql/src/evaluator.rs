@@ -364,14 +364,15 @@ fn try_single_pass<S: QueryStore + Sync>(
             let samples = storage
                 .search_by_metric_name(&name, window)
                 .map_err(|e| EvalError::Storage(e.to_string()))?;
-            let ts: Vec<i64> = samples.iter().map(|s| s.timestamp_ms).collect();
-            let vals: Vec<f64> = samples.iter().map(|s| s.value as f64).collect();
+            // Roll up directly over the `StoredSample` slice — no per-series
+            // `ts`/`vals` extraction (which copied every decoded sample twice,
+            // the dominant evaluator-side cost for heavy aggregations).
             let step_vals: Vec<Option<f64>> = steps
                 .iter()
                 .map(|&st| {
-                    let wlo = ts.partition_point(|&x| x < st - range_ms);
-                    let whi = ts.partition_point(|&x| x <= st);
-                    (wlo != whi).then(|| reduce_over_time(kind, &vals[wlo..whi]))
+                    let wlo = samples.partition_point(|s| s.timestamp_ms < st - range_ms);
+                    let whi = samples.partition_point(|s| s.timestamp_ms <= st);
+                    (wlo != whi).then(|| reduce_over_time_samples(kind, &samples[wlo..whi]))
                 })
                 .collect();
             Ok((name, step_vals))
@@ -1932,6 +1933,33 @@ fn evaluate_over_time(
 /// Reduce a non-empty window of sample values to a single `*_over_time` value.
 /// Shared by the generic per-step path and the single-pass fast path so both
 /// compute identically.
+/// `reduce_over_time` over a `StoredSample` window, reading `value as f64`
+/// inline so the caller needn't materialize a `Vec<f64>` per series. Equivalent
+/// to `reduce_over_time(kind, &w.iter().map(|s| s.value as f64).collect())`.
+fn reduce_over_time_samples(kind: OverTimeKind, w: &[StoredSample]) -> f64 {
+    match kind {
+        OverTimeKind::Sum => w.iter().map(|s| s.value as f64).sum::<f64>(),
+        OverTimeKind::Avg => {
+            w.iter().map(|s| s.value as f64).sum::<f64>() / w.len() as f64
+        }
+        OverTimeKind::Min => {
+            w.iter().map(|s| s.value as f64).fold(f64::INFINITY, f64::min)
+        }
+        OverTimeKind::Max => {
+            w.iter().map(|s| s.value as f64).fold(f64::NEG_INFINITY, f64::max)
+        }
+        OverTimeKind::Count => w.len() as f64,
+        OverTimeKind::Last => w.last().map_or(f64::NAN, |s| s.value as f64),
+        OverTimeKind::Present => 1.0,
+        // Two-pass reductions: fall back to a temp Vec (rare; not in the
+        // TSBS heavy-aggregation shapes).
+        OverTimeKind::Stddev | OverTimeKind::Stdvar => {
+            let v: Vec<f64> = w.iter().map(|s| s.value as f64).collect();
+            reduce_over_time(kind, &v)
+        }
+    }
+}
+
 fn reduce_over_time(kind: OverTimeKind, values: &[f64]) -> f64 {
     match kind {
         OverTimeKind::Sum => values.iter().sum::<f64>(),
