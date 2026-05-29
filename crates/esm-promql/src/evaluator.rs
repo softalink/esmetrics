@@ -217,6 +217,10 @@ impl<S: QueryStore> QueryStore for RangeCache<'_, S> {
         self.inner.series_for_metric_name(name_part)
     }
 
+    fn series_for_label(&self, label_name: &[u8], label_value: &[u8]) -> Vec<Vec<u8>> {
+        self.inner.series_for_label(label_name, label_value)
+    }
+
     fn distinct_metric_names(&self) -> Vec<Vec<u8>> {
         self.inner.distinct_metric_names()
     }
@@ -2185,7 +2189,15 @@ fn canonical_storage_key(sel: &VectorSelector) -> Result<Vec<u8>, EvalError> {
 /// [`matches_selector`], so an over-broad candidate set stays correct — this
 /// only ever *narrows*, never drops a real match.
 fn candidate_series(storage: &impl QueryStore, sel: &VectorSelector) -> Vec<Vec<u8>> {
-    // Literal name: `sel.name` or a `__name__="..."` matcher.
+    use std::collections::HashSet;
+
+    // Collect a posting list per anchorable constraint. Each list is a
+    // *superset* of the true matches for that constraint, so intersecting them
+    // never drops a real match; `matches_selector` (applied by the caller)
+    // does the exact filtering afterwards.
+    let mut sets: Vec<Vec<Vec<u8>>> = Vec::new();
+
+    // Metric-name anchor: literal `sel.name` / `__name__="..."`, else `__name__=~regex`.
     let literal = sel.name.as_deref().or_else(|| {
         sel.matchers
             .iter()
@@ -2193,13 +2205,9 @@ fn candidate_series(storage: &impl QueryStore, sel: &VectorSelector) -> Vec<Vec<
             .map(|m| m.value.as_str())
     });
     if let Some(name) = literal {
-        return storage.series_for_metric_name(name.as_bytes());
-    }
-    // `__name__=~regex` (only when there's no literal name): filter the small
-    // set of distinct names by the regex, then expand to their series.
-    if sel.name.is_none()
-        && let Some(m) =
-            sel.matchers.iter().find(|m| m.name == "__name__" && m.op == MatchOp::RegexMatch)
+        sets.push(storage.series_for_metric_name(name.as_bytes()));
+    } else if let Some(m) =
+        sel.matchers.iter().find(|m| m.name == "__name__" && m.op == MatchOp::RegexMatch)
     {
         let mut out = Vec::new();
         for dn in storage.distinct_metric_names() {
@@ -2207,10 +2215,31 @@ fn candidate_series(storage: &impl QueryStore, sel: &VectorSelector) -> Vec<Vec<
                 out.extend(storage.series_for_metric_name(&dn));
             }
         }
-        return out;
+        sets.push(out);
     }
-    // No usable name constraint: full scan.
-    storage.iter_metric_names().into_iter().map(|(n, _)| n).collect()
+
+    // Equality label anchors (non-empty value; `__name__` handled above). An
+    // empty value means "label absent or empty", which the index can't
+    // represent, so skip those.
+    for m in &sel.matchers {
+        if m.op == MatchOp::Equal && m.name != "__name__" && !m.value.is_empty() {
+            sets.push(storage.series_for_label(m.name.as_bytes(), m.value.as_bytes()));
+        }
+    }
+
+    if sets.is_empty() {
+        // No anchorable constraint: full scan.
+        return storage.iter_metric_names().into_iter().map(|(n, _)| n).collect();
+    }
+
+    // Intersect, starting from the smallest posting list.
+    sets.sort_by_key(Vec::len);
+    let mut acc: HashSet<Vec<u8>> = sets[0].iter().cloned().collect();
+    for s in &sets[1..] {
+        let other: HashSet<&[u8]> = s.iter().map(Vec::as_slice).collect();
+        acc.retain(|x| other.contains(x.as_slice()));
+    }
+    acc.into_iter().collect()
 }
 
 fn matches_selector(name: &[u8], sel: &VectorSelector) -> bool {

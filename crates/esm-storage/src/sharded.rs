@@ -210,6 +210,14 @@ impl QueryStore for ShardedStorage {
         out
     }
 
+    fn series_for_label(&self, label_name: &[u8], label_value: &[u8]) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        for sh in &self.shards {
+            out.extend(guard(sh).series_for_label(label_name, label_value));
+        }
+        out
+    }
+
     fn distinct_metric_names(&self) -> Vec<Vec<u8>> {
         let mut set: std::collections::BTreeSet<Vec<u8>> = std::collections::BTreeSet::new();
         for sh in &self.shards {

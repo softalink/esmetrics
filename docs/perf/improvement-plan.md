@@ -127,10 +127,28 @@ redundant for a 3-day/1h `query_range`.
 - **Result (scale-1000, 10k series, med @ 8 workers):** double-groupby-1
   3514→**911 ms (3.9×)**; single-groupby-1-1-1 71→54 ms; single-groupby-5-1-1
   388→278 ms. Correctness preserved (1000 host-groups; range tests green).
-- **Tradeoff:** a broad range query buffers its touched series in memory
-  (~3.6 GB peak for double-groupby-5 over 5k series). A per-query memory cap /
-  streaming evaluation is the next refinement; broad multi-metric aggregations
-  remain compute+data-bound.
+- **Tradeoff:** a broad range query buffers its touched series in memory.
+
+## RangeCache memory cap  ✅ DONE (2026-05-29)
+- ✅ `RangeCache` now caps memoized data at 16M samples (~256 MB); series
+  beyond the cap bypass the cache and are served per-step. Correctness-neutral
+  graceful degradation — bounded memory for pathologically broad range queries.
+
+## Inverted label index  ✅ DONE (2026-05-29)
+**Was:** after the name index, host-filtered selectors still scanned every
+series of that metric (e.g. 1000 `cpu_usage_user` series to find 1 host).
+- ✅ Added a `(label_name, label_value) → series-keys` index in `Storage`
+  (incremental + rebuilt on open), exposed via `QueryStore::series_for_label`
+  (ShardedStorage fans out). `candidate_series` now **intersects** the
+  name-posting with each equality-label posting (smallest-first), so
+  host-anchored queries resolve to ~the matching series directly.
+  Correctness-preserving (each posting is a superset; `matches_selector` still
+  applies). Empty-value `=""` matchers are not anchored (can't index absence).
+- **Result (scale-1000, med @ 8 workers):** single-groupby-1-1-1
+  **54→12 ms (4.5×)**, single-groupby-5-1-1 **278→63 ms (4.4×)**.
+  double-groupby (no equality host filter) unchanged.
+- **Cumulative from session start:** single-groupby-1-1-1 **172→12 ms (14×)**,
+  single-groupby-5-1-1 **617→63 ms (10×)**, double-groupby-1 **3514→942 ms (3.7×)**.
 
 ## Final gate
 Re-run the full TSBS suite at scale=1000 and regenerate

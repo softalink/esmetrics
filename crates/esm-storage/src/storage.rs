@@ -156,6 +156,8 @@ pub trait QueryStore {
     fn lookup_tsid(&self, metric_name: &[u8]) -> Option<Tsid>;
     /// Full series keys whose metric-name part equals `name_part`.
     fn series_for_metric_name(&self, name_part: &[u8]) -> Vec<Vec<u8>>;
+    /// Full series keys carrying `label_name="label_value"`.
+    fn series_for_label(&self, label_name: &[u8], label_value: &[u8]) -> Vec<Vec<u8>>;
     /// Every distinct metric-name part in the store.
     fn distinct_metric_names(&self) -> Vec<Vec<u8>>;
 }
@@ -176,6 +178,9 @@ impl QueryStore for Storage {
     }
     fn series_for_metric_name(&self, name_part: &[u8]) -> Vec<Vec<u8>> {
         Storage::series_for_metric_name(self, name_part)
+    }
+    fn series_for_label(&self, label_name: &[u8], label_value: &[u8]) -> Vec<Vec<u8>> {
+        Storage::series_for_label(self, label_name, label_value)
     }
     fn distinct_metric_names(&self) -> Vec<Vec<u8>> {
         Storage::distinct_metric_names(self)
@@ -230,7 +235,15 @@ pub struct Storage {
     /// keys sharing that name. Lets name-anchored selectors resolve to just
     /// the relevant series instead of scanning every series.
     metric_name_index: HashMap<Vec<u8>, Vec<Vec<u8>>>,
+
+    /// Inverted index: `(label_name, label_value)` → full series keys carrying
+    /// that label. Lets selectors with equality label matchers (e.g.
+    /// `hostname="host_0"`) narrow candidates without a full scan.
+    label_index: LabelIndex,
 }
+
+/// `(label_name, label_value)` → full series keys carrying that label pair.
+type LabelIndex = HashMap<(Vec<u8>, Vec<u8>), Vec<Vec<u8>>>;
 
 /// The metric-name part of a full series key: the bytes before the first `{`.
 fn metric_name_part(key: &[u8]) -> &[u8] {
@@ -238,6 +251,26 @@ fn metric_name_part(key: &[u8]) -> &[u8] {
         Some(i) => &key[..i],
         None => key,
     }
+}
+
+/// Parse the `{k="v",...}` label part of a canonical series key into
+/// `(label_name, label_value)` byte pairs. Trusts the canonical
+/// text-exposition encoding (sorted `name="value"`, comma-separated).
+fn parse_label_pairs(key: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let Some(open) = key.iter().position(|&b| b == b'{') else { return Vec::new() };
+    let Ok(s) = std::str::from_utf8(&key[open..]) else { return Vec::new() };
+    let inner = s.trim_start_matches('{').trim_end_matches('}');
+    let mut out = Vec::new();
+    if inner.is_empty() {
+        return out;
+    }
+    for part in inner.split(',') {
+        if let Some((name, raw)) = part.split_once('=') {
+            let value = raw.trim_start_matches('"').trim_end_matches('"');
+            out.push((name.as_bytes().to_vec(), value.as_bytes().to_vec()));
+        }
+    }
+    out
 }
 
 impl Storage {
@@ -272,23 +305,34 @@ impl Storage {
             pending_samples: 0,
             parts_index: Vec::new(),
             metric_name_index: HashMap::new(),
+            label_index: HashMap::new(),
         };
         storage.load_index()?;
         storage.bootstrap_from_disk()?;
-        storage.rebuild_metric_name_index();
+        storage.rebuild_query_indexes();
         Ok(storage)
     }
 
-    /// Rebuild the metric-name → series-keys index from the current
+    /// Rebuild the metric-name and label inverted indexes from the current
     /// `name_to_tsid` map. Called once after open; kept current incrementally
     /// by [`Self::get_or_create_tsid`] thereafter.
-    fn rebuild_metric_name_index(&mut self) {
+    fn rebuild_query_indexes(&mut self) {
         self.metric_name_index.clear();
-        for key in self.name_to_tsid.keys() {
-            self.metric_name_index
-                .entry(metric_name_part(key).to_vec())
-                .or_default()
-                .push(key.clone());
+        self.label_index.clear();
+        let keys: Vec<Vec<u8>> = self.name_to_tsid.keys().cloned().collect();
+        for key in keys {
+            self.index_series_key(&key);
+        }
+    }
+
+    /// Add one series key to both inverted indexes.
+    fn index_series_key(&mut self, key: &[u8]) {
+        self.metric_name_index
+            .entry(metric_name_part(key).to_vec())
+            .or_default()
+            .push(key.to_vec());
+        for (ln, lv) in parse_label_pairs(key) {
+            self.label_index.entry((ln, lv)).or_default().push(key.to_vec());
         }
     }
 
@@ -497,10 +541,7 @@ impl Storage {
         let tsid = Tsid { metric_id, ..Default::default() };
         self.name_to_tsid.insert(name.to_vec(), tsid);
         self.tsid_to_name.insert(tsid, name.to_vec());
-        self.metric_name_index
-            .entry(metric_name_part(name).to_vec())
-            .or_default()
-            .push(name.to_vec());
+        self.index_series_key(name);
         self.index_dirty = true;
         tsid
     }
@@ -510,6 +551,15 @@ impl Storage {
     #[must_use]
     pub fn series_for_metric_name(&self, name_part: &[u8]) -> Vec<Vec<u8>> {
         self.metric_name_index.get(name_part).cloned().unwrap_or_default()
+    }
+
+    /// Full series keys carrying `label_name="label_value"`. Empty if none.
+    #[must_use]
+    pub fn series_for_label(&self, label_name: &[u8], label_value: &[u8]) -> Vec<Vec<u8>> {
+        self.label_index
+            .get(&(label_name.to_vec(), label_value.to_vec()))
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Every distinct metric-name part known to this store.
@@ -1104,6 +1154,12 @@ mod tests {
         let mut names = s.distinct_metric_names();
         names.sort();
         assert_eq!(names, vec![b"cpu".to_vec(), b"mem".to_vec()]);
+        // Label index: host="a" carries both cpu and mem series.
+        let mut by_host_a = s.series_for_label(b"host", b"a");
+        by_host_a.sort();
+        assert_eq!(by_host_a, vec![b"cpu{host=\"a\"}".to_vec(), b"mem{host=\"a\"}".to_vec()]);
+        assert_eq!(s.series_for_label(b"host", b"b"), vec![b"cpu{host=\"b\"}".to_vec()]);
+        assert!(s.series_for_label(b"host", b"z").is_empty());
         // Survives reopen (rebuilt from the persisted name map).
         s.flush().unwrap();
         s.shutdown().unwrap();
