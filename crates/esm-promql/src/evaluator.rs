@@ -2521,6 +2521,25 @@ fn canonical_storage_key(sel: &VectorSelector) -> Result<Vec<u8>, EvalError> {
 /// Falls back to the full series list otherwise. The caller still applies
 /// [`matches_selector`], so an over-broad candidate set stays correct — this
 /// only ever *narrows*, never drops a real match.
+/// If `pat` is a pure alternation of plain literals (`a|b|c`, or a single
+/// literal, with no regex metacharacters), return the literals — so a
+/// `label=~'a|b|c'` matcher can be resolved by exact index lookups instead of
+/// a scan. Returns `None` for any pattern with regex structure, leaving the
+/// caller to fall back to scanning + `matches_selector`. Sound because the
+/// matcher's regex is anchored (`^(?:…)$`), so each literal alternative matches
+/// exactly one value.
+fn literal_alternation(pat: &str) -> Option<Vec<&str>> {
+    const META: &[char] = &['.', '^', '$', '*', '+', '?', '(', ')', '[', ']', '{', '}', '\\'];
+    if pat.is_empty() {
+        return None;
+    }
+    let parts: Vec<&str> = pat.split('|').collect();
+    if parts.iter().any(|p| p.is_empty() || p.contains(META)) {
+        return None;
+    }
+    Some(parts)
+}
+
 fn candidate_series(storage: &impl QueryStore, sel: &VectorSelector) -> Vec<Vec<u8>> {
     use std::collections::HashSet;
 
@@ -2541,22 +2560,54 @@ fn candidate_series(storage: &impl QueryStore, sel: &VectorSelector) -> Vec<Vec<
         sets.push(storage.series_for_metric_name(name.as_bytes()));
     }
 
-    // Equality label anchors (non-empty value; `__name__` handled above). An
-    // empty value means "label absent or empty", which the index can't
-    // represent, so skip those.
+    // Per-matcher anchors from the index:
+    // - equality `label="v"` (non-empty) → that label's posting;
+    // - `label=~'v1|v2|...'` where every alternative is a plain literal → the
+    //   union of those exact postings (resolved via the index, not a scan).
+    //   This is the common multi-host shape `hostname=~'host_a|host_b|...'`.
+    // An empty equality value means "label absent or empty", which the index
+    // can't represent, so skip it.
     for m in &sel.matchers {
-        if m.op == MatchOp::Equal && m.name != "__name__" && !m.value.is_empty() {
-            sets.push(storage.series_for_label(m.name.as_bytes(), m.value.as_bytes()));
+        if m.name == "__name__" {
+            continue;
+        }
+        match m.op {
+            MatchOp::Equal if !m.value.is_empty() => {
+                sets.push(storage.series_for_label(m.name.as_bytes(), m.value.as_bytes()));
+            }
+            MatchOp::RegexMatch => {
+                if let Some(lits) = literal_alternation(&m.value) {
+                    let mut out = Vec::new();
+                    for lit in lits {
+                        out.extend(storage.series_for_label(m.name.as_bytes(), lit.as_bytes()));
+                    }
+                    sets.push(out);
+                }
+            }
+            _ => {}
         }
     }
 
-    // `__name__=~regex` anchor: only when nothing cheaper anchors the set.
-    // Resolving it scans every distinct metric name and unions all matching
-    // metrics' full series lists — for `cpu_(...)` that's all 10 metrics ×
-    // every host. When an equality anchor (e.g. `hostname="h"`) is present its
-    // posting is already a valid superset (the caller's `matches_selector`
-    // applies the regex exactly), so skip the scan and avoid materializing
-    // thousands of names only to intersect them away.
+    // A literal-alternation `__name__=~'a|b|...'` resolves via exact name
+    // lookups too (no scan).
+    if let Some(m) =
+        sel.matchers.iter().find(|m| m.name == "__name__" && m.op == MatchOp::RegexMatch)
+        && let Some(lits) = literal_alternation(&m.value)
+    {
+        let mut out = Vec::new();
+        for lit in lits {
+            out.extend(storage.series_for_metric_name(lit.as_bytes()));
+        }
+        sets.push(out);
+    }
+
+    // General `__name__=~regex` anchor: only when nothing cheaper anchors the
+    // set. Resolving it scans every distinct metric name and unions all
+    // matching metrics' full series lists — for `cpu_(...)` that's all 10
+    // metrics × every host. When a cheaper anchor (equality / literal-
+    // alternation label) is present its posting is already a valid superset
+    // (the caller's `matches_selector` applies the regex exactly), so skip the
+    // scan and avoid materializing thousands of names only to intersect away.
     if sets.is_empty()
         && let Some(m) =
             sel.matchers.iter().find(|m| m.name == "__name__" && m.op == MatchOp::RegexMatch)
@@ -3095,6 +3146,49 @@ mod tests {
     use super::*;
     use crate::parser::parse;
     use esm_storage::{Sample, Storage};
+
+    #[test]
+    fn candidate_series_is_a_superset() {
+        // candidate_series must return a *superset* of the true matches, since
+        // the caller filters exactly with matches_selector. This guards the
+        // index-anchor shortcuts (equality / literal-alternation) — a bug there
+        // would silently drop series, which the fast-vs-generic test cannot
+        // catch (both share candidate_series).
+        let mut owned: Vec<(Vec<u8>, i64, i64)> = Vec::new();
+        for metric in ["cpu_usage_user", "cpu_usage_system", "mem_used"] {
+            for host in ["a", "b", "c", "d"] {
+                owned.push((format!("{metric}{{hostname=\"{host}\"}}").into_bytes(), 1000, 1));
+            }
+        }
+        let refs: Vec<(&[u8], i64, i64)> =
+            owned.iter().map(|(n, t, v)| (n.as_slice(), *t, *v)).collect();
+        let (s, _t) = open_storage(&refs);
+        let all: Vec<Vec<u8>> = s.iter_metric_names().into_iter().map(|(n, _)| n).collect();
+
+        let selectors = [
+            "cpu_usage_user{hostname=\"a\"}",
+            "{__name__=~\"cpu_(usage_user|usage_system)\", hostname=\"b\"}",
+            "{__name__=~\"cpu_(usage_user|usage_system)\", hostname=~\"a|c\"}",
+            "{__name__=~\"cpu_usage_user|mem_used\"}",
+            "cpu_usage_user{hostname=~\"a|b|nonexistent\"}",
+            "{__name__=~\"cpu_(usage_user|usage_system)\"}",
+            "{hostname=~\"a|b\"}",
+        ];
+        for q in selectors {
+            let expr = parse(q).unwrap();
+            let Expr::VectorSelector(sel) = &expr else { panic!("not a selector: {q}") };
+            let got: std::collections::HashSet<Vec<u8>> =
+                candidate_series(&s, sel).into_iter().collect();
+            let truth: Vec<&Vec<u8>> = all.iter().filter(|n| matches_selector(n, sel)).collect();
+            for n in truth {
+                assert!(
+                    got.contains(n),
+                    "candidate_series dropped a true match {:?} for {q}",
+                    String::from_utf8_lossy(n)
+                );
+            }
+        }
+    }
 
     fn open_storage(samples: &[(&[u8], i64, i64)]) -> (Storage, tempfile::TempDir) {
         let tmp = tempfile::tempdir().unwrap();
