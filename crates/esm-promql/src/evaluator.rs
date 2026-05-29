@@ -41,7 +41,7 @@
 
 use std::collections::BTreeMap;
 
-use esm_storage::{Storage, TimeRange};
+use esm_storage::{QueryStore, TimeRange};
 use thiserror::Error;
 
 use crate::ast::{
@@ -120,7 +120,7 @@ pub struct RangeVectorElement {
 /// See [`EvalError`].
 pub fn evaluate_range(
     expr: &Expr,
-    storage: &Storage,
+    storage: &impl QueryStore,
     start_ms: i64,
     end_ms: i64,
     step_ms: i64,
@@ -160,7 +160,11 @@ pub fn evaluate_range(
 ///
 /// # Errors
 /// See [`EvalError`].
-pub fn evaluate(expr: &Expr, storage: &Storage, ctx: EvalContext) -> Result<Value, EvalError> {
+pub fn evaluate(
+    expr: &Expr,
+    storage: &impl QueryStore,
+    ctx: EvalContext,
+) -> Result<Value, EvalError> {
     match expr {
         Expr::NumberLiteral(n) => Ok(Value::Scalar(*n)),
         Expr::Paren(inner) => evaluate(inner, storage, ctx),
@@ -189,7 +193,7 @@ pub fn evaluate(expr: &Expr, storage: &Storage, ctx: EvalContext) -> Result<Valu
 /// follow-up.
 fn evaluate_subquery_as_instant(
     sq: &crate::ast::SubqueryExpr,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
 ) -> Result<Value, EvalError> {
     let step_ms = sq.step_ms.unwrap_or(60_000);
@@ -246,7 +250,7 @@ fn evaluate_subquery_as_instant(
 
 fn evaluate_aggregation(
     agg: &crate::ast::AggregationExpr,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
 ) -> Result<Value, EvalError> {
     use crate::ast::{AggregationOp, GroupingKind};
@@ -473,7 +477,7 @@ fn group_key(metric_name: &[u8], grouping: Option<&crate::ast::GroupingClause>) 
 
 fn evaluate_function(
     fc: &crate::ast::FunctionCall,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
 ) -> Result<Value, EvalError> {
     match fc.name.as_str() {
@@ -591,7 +595,7 @@ enum ClampMode {
 
 fn evaluate_clamp(
     fc: &crate::ast::FunctionCall,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
     mode: ClampMode,
 ) -> Result<Value, EvalError> {
@@ -645,7 +649,7 @@ fn expect_scalar(name: &str, v: Value) -> Result<f64, EvalError> {
 
 fn evaluate_timestamp_fn(
     fc: &crate::ast::FunctionCall,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
 ) -> Result<Value, EvalError> {
     if fc.args.len() != 1 {
@@ -689,7 +693,7 @@ enum TimeField {
 
 fn apply_time_field(
     fc: &crate::ast::FunctionCall,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
     field: TimeField,
 ) -> Result<Value, EvalError> {
@@ -795,7 +799,7 @@ fn day_of_year_for(year: i64, month: u8, day: u8) -> u16 {
 
 fn evaluate_label_replace(
     fc: &crate::ast::FunctionCall,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
 ) -> Result<Value, EvalError> {
     if fc.args.len() != 5 {
@@ -837,7 +841,7 @@ fn evaluate_label_replace(
 
 fn evaluate_label_join(
     fc: &crate::ast::FunctionCall,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
 ) -> Result<Value, EvalError> {
     if fc.args.len() < 3 {
@@ -889,7 +893,7 @@ fn simple_full_regex_match(s: &str, pattern: &str) -> bool {
 
 fn evaluate_changes(
     fc: &crate::ast::FunctionCall,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
 ) -> Result<Value, EvalError> {
     evaluate_over_time_count_like(fc, storage, ctx, |samples| {
@@ -905,7 +909,7 @@ fn evaluate_changes(
 
 fn evaluate_resets(
     fc: &crate::ast::FunctionCall,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
 ) -> Result<Value, EvalError> {
     evaluate_over_time_count_like(fc, storage, ctx, |samples| {
@@ -921,7 +925,7 @@ fn evaluate_resets(
 
 fn evaluate_over_time_count_like<F>(
     fc: &crate::ast::FunctionCall,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
     accumulate: F,
 ) -> Result<Value, EvalError>
@@ -992,7 +996,7 @@ where
 
 fn evaluate_absent(
     fc: &crate::ast::FunctionCall,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
 ) -> Result<Value, EvalError> {
     if fc.args.len() != 1 {
@@ -1016,7 +1020,7 @@ fn evaluate_absent(
 
 fn evaluate_absent_over_time(
     fc: &crate::ast::FunctionCall,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
 ) -> Result<Value, EvalError> {
     if fc.args.len() != 1 {
@@ -1076,7 +1080,7 @@ fn format_promql_value(v: f64) -> String {
 
 fn evaluate_histogram_quantile(
     fc: &crate::ast::FunctionCall,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
 ) -> Result<Value, EvalError> {
     if fc.args.len() != 2 {
@@ -1166,7 +1170,7 @@ fn evaluate_histogram_quantile(
 /// separate sibling series; this function looks them up directly.
 fn evaluate_histogram_sibling(
     fc: &crate::ast::FunctionCall,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
     suffix: &str,
 ) -> Result<Value, EvalError> {
@@ -1223,7 +1227,7 @@ fn evaluate_histogram_sibling(
 /// `histogram_avg(v) = histogram_sum(v) / histogram_count(v)`.
 fn evaluate_histogram_avg(
     fc: &crate::ast::FunctionCall,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
 ) -> Result<Value, EvalError> {
     let sums = match evaluate_histogram_sibling(fc, storage, ctx, "_sum")? {
@@ -1271,7 +1275,7 @@ fn sibling_label_key(metric_name: &[u8], suffix: &str) -> Vec<u8> {
 #[allow(clippy::cast_precision_loss)]
 fn evaluate_histogram_fraction(
     fc: &crate::ast::FunctionCall,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
 ) -> Result<Value, EvalError> {
     if fc.args.len() != 3 {
@@ -1353,7 +1357,7 @@ fn evaluate_histogram_fraction(
 #[allow(clippy::cast_precision_loss)]
 fn evaluate_histogram_stddev(
     fc: &crate::ast::FunctionCall,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
     variance_only: bool,
 ) -> Result<Value, EvalError> {
@@ -1422,7 +1426,7 @@ fn evaluate_histogram_stddev(
 
 fn evaluate_sort(
     fc: &crate::ast::FunctionCall,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
     desc: bool,
 ) -> Result<Value, EvalError> {
@@ -1461,7 +1465,7 @@ enum OverTimeKind {
 
 fn evaluate_over_time(
     fc: &crate::ast::FunctionCall,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
     kind: OverTimeKind,
 ) -> Result<Value, EvalError> {
@@ -1571,7 +1575,7 @@ enum RateKind {
 /// `t` seconds forward and returns the predicted value.
 fn evaluate_predict_linear(
     fc: &crate::ast::FunctionCall,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
 ) -> Result<Value, EvalError> {
     if fc.args.len() != 2 {
@@ -1593,7 +1597,7 @@ fn evaluate_predict_linear(
 /// than a projected value.
 fn evaluate_deriv(
     fc: &crate::ast::FunctionCall,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
 ) -> Result<Value, EvalError> {
     if fc.args.len() != 1 {
@@ -1614,7 +1618,7 @@ fn evaluate_deriv(
 /// Matches Prometheus's implementation.
 fn evaluate_holt_winters(
     fc: &crate::ast::FunctionCall,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
 ) -> Result<Value, EvalError> {
     if fc.args.len() != 3 {
@@ -1682,7 +1686,7 @@ fn linear_regression(samples: &[esm_storage::StoredSample], now_ms: i64) -> Opti
 fn apply_range_vector_per_series<F>(
     arg: &Expr,
     fn_name: &str,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
     compute: F,
 ) -> Result<Value, EvalError>
@@ -1752,7 +1756,7 @@ where
 
 fn evaluate_rate_like(
     fc: &crate::ast::FunctionCall,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
     kind: RateKind,
 ) -> Result<Value, EvalError> {
@@ -1899,7 +1903,7 @@ fn compute_rate_like(
 
 fn apply_to_vector_or_scalar(
     fc: &crate::ast::FunctionCall,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
     f: fn(f64) -> f64,
 ) -> Result<Value, EvalError> {
@@ -1940,7 +1944,7 @@ fn apply_unary(op: UnaryOp, v: Value) -> Value {
 
 fn evaluate_selector(
     sel: &VectorSelector,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
 ) -> Result<Vec<InstantVectorElement>, EvalError> {
     // Range vectors aren't valid for instant queries — the executor will
@@ -2168,7 +2172,7 @@ fn regex_full_match(actual: &str, pattern: &str) -> bool {
 
 fn evaluate_binary(
     b: &BinaryExpr,
-    storage: &Storage,
+    storage: &impl QueryStore,
     ctx: EvalContext,
 ) -> Result<Value, EvalError> {
     let lhs = evaluate(&b.lhs, storage, ctx)?;

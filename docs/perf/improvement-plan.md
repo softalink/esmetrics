@@ -82,10 +82,23 @@ series with `matches_selector`); they were two specific bugs:
   **sharded ingest** (per-shard locks / lock-free write buffer) so appends
   run in parallel — a larger change tracked separately.
 
-## P5 — Ingest throughput  *(close the 1.8× gap)*
-- Profile the append path (TSID assignment, per-sample `BTreeMap` overhead);
-  largely unblocked once P1/P4 land.
-- **Verify:** ingest rows/s within ~1.2× of VM at scale=1000.
+## P5 / sharded ingest — concurrency on the write path  ✅ DONE (2026-05-29)
+**Was:** ingest took the single global write lock, serializing all 8 loader
+workers (~1 core of work while VM uses many).
+- ✅ Added `ShardedStorage`: N independent `Storage` shards (each its own
+  subdir + lock), series routed by a stable FNV-1a hash of the metric name.
+  esm-single uses `min(cores, 16)` shards. Ingest partitions a batch to shards;
+  concurrent callers hit different shards in parallel.
+- ✅ Kept the evaluator agnostic via a new `QueryStore` trait implemented by
+  both `Storage` and `ShardedStorage` (queries route point-reads to the owning
+  shard, fan out whole-store scans). No TSID-coherence work needed — the
+  evaluator resolves purely by metric name.
+- **Result:** persisting ingest **182K → 296K rows/s (+63%)** at scale=1000,
+  RSS still ~1.65 GB; gap to VM's 643K narrowed ~3.5× → ~2.2×. All query
+  correctness preserved (1000-series fan-out; regex + `by(__name__)` intact).
+- **Remaining headroom:** per-batch sample clone into shard buckets and
+  influx parsing are the next ingest costs; a true inverted label index would
+  cut the O(all-series) query scan further.
 
 ## Final gate
 Re-run the full TSBS suite at scale=1000 and regenerate

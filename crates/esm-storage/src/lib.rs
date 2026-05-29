@@ -11,7 +11,9 @@
 //! goal. See `docs/format/` for reverse-engineered format specifications.
 
 pub mod mergeset;
+pub mod sharded;
 pub mod storage;
 pub mod timeseries;
 
-pub use storage::{Sample, Storage, StorageError, StoredSample, TimeRange};
+pub use sharded::ShardedStorage;
+pub use storage::{QueryStore, Sample, Storage, StorageError, StoredSample, TimeRange};

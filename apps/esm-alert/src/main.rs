@@ -209,7 +209,7 @@ async fn evaluate_recording_rules(
             };
             let value = {
                 let s = storage.lock().await;
-                esm_promql::evaluator::evaluate(&expr, &s, ctx)
+                esm_promql::evaluator::evaluate(&expr, &*s, ctx)
             };
             let value = match value {
                 Ok(v) => v,
@@ -294,7 +294,7 @@ async fn evaluate_local(
                 .map_err(|e| anyhow::anyhow!("parse rule {}: {e}", rule.alert))?;
             let ctx = esm_promql::EvalContext::instant(now_ms);
             let storage_guard = storage.lock().await;
-            let value = esm_promql::evaluator::evaluate(&expr, &storage_guard, ctx)
+            let value = esm_promql::evaluator::evaluate(&expr, &*storage_guard, ctx)
                 .map_err(|e| anyhow::anyhow!("evaluate rule {}: {e}", rule.alert))?;
             drop(storage_guard);
             let firing_now = match &value {

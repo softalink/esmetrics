@@ -136,6 +136,42 @@ struct PartMeta {
     max_ts: i64,
 }
 
+/// Read-only series source consumed by the query evaluator. Implemented by
+/// both the single-shard [`Storage`] and the multi-shard
+/// [`crate::sharded::ShardedStorage`], so the evaluator is agnostic to how the
+/// data is partitioned.
+pub trait QueryStore {
+    /// Every `(metric_name, tsid)` pair known to the store.
+    fn iter_metric_names(&self) -> Vec<(Vec<u8>, Tsid)>;
+    /// Samples for an exact metric-name key within `range`.
+    ///
+    /// # Errors
+    /// Propagates storage I/O / decode failures.
+    fn search_by_metric_name(
+        &self,
+        metric_name: &[u8],
+        range: TimeRange,
+    ) -> Result<Vec<StoredSample>, StorageError>;
+    /// TSID for an exact metric-name key, if present (existence check).
+    fn lookup_tsid(&self, metric_name: &[u8]) -> Option<Tsid>;
+}
+
+impl QueryStore for Storage {
+    fn iter_metric_names(&self) -> Vec<(Vec<u8>, Tsid)> {
+        Storage::iter_metric_names(self)
+    }
+    fn search_by_metric_name(
+        &self,
+        metric_name: &[u8],
+        range: TimeRange,
+    ) -> Result<Vec<StoredSample>, StorageError> {
+        Storage::search_by_metric_name(self, metric_name, range)
+    }
+    fn lookup_tsid(&self, metric_name: &[u8]) -> Option<Tsid> {
+        Storage::lookup_tsid(self, metric_name)
+    }
+}
+
 /// Top-level storage engine.
 #[allow(missing_debug_implementations)]
 pub struct Storage {
