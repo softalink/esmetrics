@@ -425,6 +425,10 @@ fn group_key(metric_name: &[u8], grouping: Option<&crate::ast::GroupingClause>) 
         None => (s, ""),
     };
     let mut labels: BTreeMap<&str, &str> = BTreeMap::new();
+    // Expose the metric name as the `__name__` label so it can participate in
+    // grouping. `by (__name__)` retains it (VM keeps it in the output; TSBS
+    // relies on this); `without (...)` always drops it, matching VM/Prometheus.
+    labels.insert("__name__", name);
     if !labels_str.is_empty() {
         for part in labels_str.split(',') {
             let Some(eq) = part.find('=') else { continue };
@@ -444,14 +448,11 @@ fn group_key(metric_name: &[u8], grouping: Option<&crate::ast::GroupingClause>) 
                 .collect(),
             GroupingKind::Without => labels
                 .iter()
-                .filter(|(k, _)| !g.labels.iter().any(|l| l == *k))
+                .filter(|(k, _)| **k != "__name__" && !g.labels.iter().any(|l| l == *k))
                 .map(|(k, v)| (*k, *v))
                 .collect(),
         },
     };
-    // Serialise without the original `__name__` (it's not part of the
-    // identity for aggregation).
-    let _ = name;
     if filtered.is_empty() {
         return Vec::new();
     }
@@ -2146,45 +2147,23 @@ fn match_op_check(actual: &str, expected: &str, op: MatchOp) -> bool {
     }
 }
 
-/// Minimal full-string regex matcher. Today this supports only literal
-/// strings plus `.` and `.*`; full RE2-style regex lands with the `regex`
-/// crate dependency.
+/// Full RE2-style regex matcher with VM/Prometheus semantics: the pattern is
+/// anchored as a full-string match (`^(?:pattern)$`). Compiled patterns are
+/// cached per thread so a selector applied across many series compiles each
+/// unique pattern once. An invalid pattern never matches (cached as `None`).
 fn regex_full_match(actual: &str, pattern: &str) -> bool {
-    // Anchored full-string match.
-    regex_match_helper(actual.as_bytes(), pattern.as_bytes())
-}
-
-fn regex_match_helper(s: &[u8], p: &[u8]) -> bool {
-    fn rec(s: &[u8], p: &[u8]) -> bool {
-        if p.is_empty() {
-            return s.is_empty();
-        }
-        // Lookahead for star — only `.*` is supported in this micro-engine.
-        if p.len() >= 2 && p[1] == b'*' {
-            let c = p[0];
-            // Zero or more matches.
-            for i in 0..=s.len() {
-                if rec(&s[i..], &p[2..]) {
-                    return true;
-                }
-                if i == s.len() || !char_match(s[i], c) {
-                    break;
-                }
-            }
-            return false;
-        }
-        if s.is_empty() {
-            return false;
-        }
-        if char_match(s[0], p[0]) {
-            return rec(&s[1..], &p[1..]);
-        }
-        false
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    thread_local! {
+        static CACHE: RefCell<HashMap<String, Option<regex::Regex>>> = RefCell::new(HashMap::new());
     }
-    fn char_match(c: u8, p: u8) -> bool {
-        p == b'.' || c == p
-    }
-    rec(s, p)
+    CACHE.with(|c| {
+        let mut cache = c.borrow_mut();
+        let compiled = cache
+            .entry(pattern.to_string())
+            .or_insert_with(|| regex::Regex::new(&format!("^(?:{pattern})$")).ok());
+        compiled.as_ref().is_some_and(|re| re.is_match(actual))
+    })
 }
 
 fn evaluate_binary(
@@ -2625,6 +2604,70 @@ mod tests {
         s.ingest(&conv).unwrap();
         s.flush().unwrap();
         (s, tmp)
+    }
+
+    fn vlen(v: &Value) -> usize {
+        match v {
+            Value::InstantVector(e) => e.len(),
+            _ => 0,
+        }
+    }
+
+    #[test]
+    fn selector_regex_and_bare_label_matching() {
+        let (s, _t) = open_storage(&[
+            (b"cpu_usage_user{hostname=\"h0\"}", 1000, 10),
+            (b"cpu_usage_system{hostname=\"h0\"}", 1000, 20),
+            (b"cpu_usage_user{hostname=\"h1\"}", 1000, 30),
+        ]);
+        let ctx = EvalContext::instant(1000);
+        // Regex alternation on __name__ (TSBS single-groupby-5 / double-groupby / cpu-max-all).
+        let a = evaluate(
+            &parse("max_over_time({__name__=~\"cpu_(usage_user|usage_system)\"}[1h])").unwrap(),
+            &s,
+            ctx,
+        )
+        .unwrap();
+        assert_eq!(vlen(&a), 3, "regex __name__ alternation should match all 3 series");
+        // Regex alternation on a normal label (cpu-max-all-8 uses hostname=~h1|h2|...).
+        let h = evaluate(
+            &parse("max_over_time({__name__=\"cpu_usage_user\",hostname=~\"h0|h1\"}[1h])").unwrap(),
+            &s,
+            ctx,
+        )
+        .unwrap();
+        assert_eq!(vlen(&h), 2, "regex hostname alternation should match both hosts");
+        // Bare label-only selector.
+        let b = evaluate(&parse("max_over_time({hostname=\"h0\"}[1h])").unwrap(), &s, ctx).unwrap();
+        assert_eq!(vlen(&b), 2, "bare hostname selector should match both h0 metrics");
+    }
+
+    #[test]
+    fn aggregation_by_name_groups_per_metric() {
+        let (s, _t) = open_storage(&[
+            (b"cpu_usage_user{hostname=\"h0\"}", 1000, 10),
+            (b"cpu_usage_system{hostname=\"h0\"}", 1000, 20),
+            (b"cpu_usage_user{hostname=\"h1\"}", 1000, 30),
+        ]);
+        let ctx = EvalContext::instant(1000);
+        // `by (__name__)` must produce one group per distinct metric name and
+        // retain __name__ in the output labels (VM semantics; TSBS relies on it).
+        let v = evaluate(
+            &parse("max(max_over_time({__name__=~\"cpu_(usage_user|usage_system)\"}[1h])) by (__name__)")
+                .unwrap(),
+            &s,
+            ctx,
+        )
+        .unwrap();
+        let Value::InstantVector(elems) = v else { panic!("want vector") };
+        assert_eq!(elems.len(), 2, "expected one group per __name__");
+        let names: std::collections::BTreeSet<_> =
+            elems.iter().map(|e| String::from_utf8_lossy(&e.metric_name).to_string()).collect();
+        assert!(
+            names.iter().any(|n| n.contains("cpu_usage_user"))
+                && names.iter().any(|n| n.contains("cpu_usage_system")),
+            "output must retain __name__; got {names:?}"
+        );
     }
 
     #[test]

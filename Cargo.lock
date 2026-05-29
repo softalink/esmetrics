@@ -558,6 +558,7 @@ dependencies = [
  "esm-common",
  "esm-storage",
  "proptest",
+ "regex",
  "tempfile",
  "thiserror",
 ]

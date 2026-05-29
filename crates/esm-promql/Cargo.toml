@@ -15,6 +15,7 @@ workspace = true
 esm-common = { workspace = true }
 esm-storage = { workspace = true }
 thiserror = { workspace = true }
+regex = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

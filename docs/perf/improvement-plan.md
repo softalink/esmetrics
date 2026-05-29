@@ -38,13 +38,23 @@ compact a tier once it holds ≥4 parts, ≤8 per merge). Cut write-amplificatio
 `Arc<Mutex<Storage>>` — each inline flush freezes all ingest workers. Closing
 it needs background/concurrent flush → **P4 (concurrency)**, not the merger.
 
-## P2 — Inverted label index  *(fixes 7/11 query correctness failures)*
-**Fixes:** `{__name__=~regex}` → empty, bare `{label=...}` → partial.
-- Build a label→postings (TSID set) index so selectors resolve by arbitrary
-  matchers, not just exact metric-name lookup. Support `=`, `!=`, `=~`, `!~`
-  including on `__name__`.
-- **Verify:** all 11 TSBS query types return series counts matching VM;
-  re-run the value-correctness comparison → parity.
+## P2 — Query correctness  ✅ DONE (2026-05-29)
+**Fixed:** all 7 failing types resolved → **4/11 → 11/11 correct** (series
+counts match VM; values exact for max, ~1% for avg_over_time window rounding).
+The root causes were *not* a missing index (the evaluator already scans all
+series with `matches_selector`); they were two specific bugs:
+- **Regex matcher** was a hand-rolled micro-engine (only literals, `.`, `.*`)
+  → `{__name__=~'cpu_(a|b)'}` matched nothing. Replaced with anchored RE2
+  (`regex` crate, `^(?:pat)$`), thread-local cached so a selector compiles each
+  pattern once across all series.
+- **`by (__name__)` grouping** collapsed everything into one empty group:
+  `group_key` parsed the metric name out but never exposed `__name__` as a
+  groupable label. Now `__name__` is a groupable label (`by` retains it —
+  VM/TSBS rely on this; `without` drops it).
+- **Verify:** ✅ all 11 TSBS types match VM series counts; cpu-max-all values
+  identical, double-groupby-all within ~1% (avg window-boundary nuance noted).
+- Note: resolution is still O(all series) per query (no inverted index yet) —
+  a *perf* follow-up that overlaps with P3, not a correctness gap.
 
 ## P3 — Query read-path efficiency  *(fixes 13–672× latency)*
 **Fixes:** `search_by_tsid` re-`read_dir`s + re-opens every part per call.
