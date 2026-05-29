@@ -40,45 +40,57 @@ that gap is now **1.4–10×** (was 10–234× before the evaluator).
 **Query latency** (scale-1000, 10k series, median @ 8 workers; all 11 types
 return series counts matching VM):
 
-| query type | VM | EsMetrics | ratio | (before decode-layout + RwLock) |
+| query type | VM | EsMetrics | ratio | (before query-perf work) |
 |---|---|---|---|---|
-| single-groupby-1-1-1 | 0.65 ms | 0.75 ms | 1.2× | (0.90 ms, 1.4×) |
-| double-groupby-1 | 63 ms | 172 ms | 2.7× | (656 ms, 10×) |
-| double-groupby-5 | 329 ms | 873 ms | 2.7× | (2.69 s, 8.2×) |
-| double-groupby-all | 701 ms | 1.66 s | 2.4× | (5.13 s, 7.3×) |
-| cpu-max-all-1 | 1.56 ms | 5.15 ms | 3.3× | (7.92 ms, 5.1×) |
-| cpu-max-all-8 | 5.04 ms | 23.0 ms | 4.6× | (44 ms, 8.7×) |
+| single-groupby-1-1-1 | 0.65 ms | **0.61 ms** | **0.94× ✅** | (0.90 ms, 1.4×) |
+| single-groupby-1-1-12 | 0.99 ms | **0.90 ms** | **0.91× ✅** | (2.15 ms, 2.2×) |
+| single-groupby-5-1-12 | 2.31 ms | **2.29 ms** | **0.99× ✅** | (7.58 ms, 3.3×) |
+| single-groupby-5-1-1 | 0.99 ms | 1.12 ms | 1.13× | (3.19 ms, 3.2×) |
+| cpu-max-all-1 | 1.56 ms | 2.12 ms | 1.36× | (7.92 ms, 5.1×) |
+| single-groupby-1-8-1 | 0.99 ms | 1.90 ms | 1.92× | (3.17 ms, 3.2×) |
+| cpu-max-all-8 | 5.04 ms | 10.6 ms | 2.11× | (44 ms, 8.7×) |
+| double-groupby-all | 701 ms | 1.48 s | 2.11× | (5.13 s, 7.3×) |
+| double-groupby-1 | 63 ms | 148 ms | 2.35× | (656 ms, 10×) |
+| double-groupby-5 | 329 ms | 782 ms | 2.38× | (2.69 s, 8.2×) |
+| single-groupby-5-8-1 | 1.81 ms | 4.84 ms | 2.67× | (13.1 ms, 7.2×) |
 
-**Read of the results:** EsMetrics is now **ahead of VM on RAM (1.6×), disk,
-and ingest**, at **parity on correctness and the simplest query**. The
-single-pass parallel evaluator cut the heavier-query gap by ~10–70× (34×→7.3× on
-double-groupby-all), and the **decode-layout fix** (the per-series read no
-longer builds a per-sample `BTreeMap` — it accumulates into a flat sorted Vec,
-sorting + deduping only when parts/pending actually overlap; read path
-14M→31M samples/s, 2.24×) then cut the heavy-aggregation gap a further **2.6–
-2.8×** (double-groupby-all 7.3×→2.8×). A follow-on `Mutex`→`RwLock` per shard (reads
-are all `&self`, so concurrent queries no longer serialize on the shard lock)
-took another ~1.2× (double-groupby-all 1.97 s→1.66 s, single-groupby
-0.99→0.75 ms — now near VM parity). No correctness regression — the fast path
-is proven equivalent to the generic path by `fast_path_matches_generic`, and the
-disk+pending dedup tests cover the merge path.
+**Read of the results:** EsMetrics is now **ahead of VM on RAM (1.6×), disk, and
+ingest**, **faster than VM on 3 query types and at parity on a 4th**, and within
+~1.4× on most of the rest. Six profiled query-path optimizations (see
+[`profiling-results.md`](./profiling-results.md)) took the heavy-aggregation gap
+from 5–234× down to ~2×: (1) a flat-Vec decode layout replacing the per-sample
+`BTreeMap` merge (read 14M→31M samples/s); (2) `Mutex`→`RwLock` per shard so
+concurrent reads don't serialize; (3) rolling up over the `StoredSample` slice
+(no `ts`/`vals` re-extraction); (4) caching each part's header + metaindex so
+per-series reads skip a JSON parse + zstd-decompress (read 31M→43.5M samples/s);
+(5) resolving selective label anchors (`hostname="h"`, `hostname=~"a|b|c"`)
+through the index instead of scanning every series of a `__name__` regex; (6)
+serializing range results directly instead of via a `serde_json::Value` tree.
+All correctness-preserving — `fast_path_matches_generic`, the disk/pending dedup
+tests, and a `candidate_series_is_a_superset` test guard the changes.
 
-**Remaining gap — heavier aggregations (now ~2.4–4.6×):** bound by raw per-query
-data volume under workers=8 CPU saturation (each query decodes ~all touched
-series). *Tried and reverted:* block-level pre-aggregation (rollup windows
-1m–1h are far smaller than the ~23 h blocks, so no window contains a whole
-block) and a batched per-part read (caps parallelism at the part count, losing
-to the per-series parallel read). The remaining lever is cutting decode volume:
-a 12 h query still decodes a full ~22.8 h block (`MAX_ROWS_PER_BLOCK=8192`) —
-early-terminating the decode past the range end, or finer blocks, would recover
-the over-decode, traded against the ingest/disk wins.
+**Remaining gap — double-groupby trio (~2.1–2.4×) and the 8-host selectors
+(~1.9–2.7×):** the double-groupby queries are bound by raw per-query data volume
+under workers=8 CPU saturation (each decodes ~all touched series); the 8-host
+selectors are dominated by small fixed per-query overhead (parse, 32-shard index
+fan-out, response setup) on a sub-5 ms query. *Tried and reverted/measured as
+ineffective:* block-level pre-aggregation (rollup windows 1m–1h ≪ ~23 h blocks);
+a batched per-part read (caps parallelism at part count); **zstd-decoder-context
+reuse (only +7% — decode is inherent zstd+delta CPU, comparable to VM on the
+same format)**. The ~1.9× block over-decode (a 12 h query decodes a full ~22.8 h
+block, `MAX_ROWS_PER_BLOCK=8192`) is **not cheaply recoverable** — zstd
+decompresses whole blocks, so stopping the post-decompress unmarshal early saves
+only the cheap part. Closing the last ~2× would require finer blocks (which
+regress the ingest + disk wins **and** break VM byte-compatibility) or a
+SIMD/columnar decode rewrite (major).
 
-**Bottom line on "surpass on every benchmark":** ahead on RAM + disk **and
-ingest**; parity on correctness/capability and the simplest query; only heavier
-aggregations remain behind — now by **single-digit multiples** rather than
-orders of magnitude. The remaining lever is a storage-format change for queries
-(finer block granularity / columnar value layout to cut per-query decode
-volume).
+**Bottom line on "surpass on every benchmark":** EsMetrics is **ahead of VM on
+RAM, disk, and ingest**, **faster on 3 query types and at parity on a 4th**, and
+within ~1.4× on most others. The last holdouts are the double-groupby trio
+(~2.1–2.4×, decode-volume bound) and the multi-host selectors (~1.9–2.7×, fixed
+overhead on sub-5 ms queries) — down from the original 7–234×. Full parity there
+is gated by a storage-format/decode rewrite that trades against the
+already-won ingest/disk/compat advantages.
 
 ---
 
