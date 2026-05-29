@@ -275,7 +275,188 @@ impl<S: QueryStore> QueryStore for RangeCache<'_, S> {
     }
 }
 
+/// Map a `*_over_time` function name to its rollup kind, if supported.
+fn over_time_kind(name: &str) -> Option<OverTimeKind> {
+    Some(match name {
+        "sum_over_time" => OverTimeKind::Sum,
+        "avg_over_time" => OverTimeKind::Avg,
+        "min_over_time" => OverTimeKind::Min,
+        "max_over_time" => OverTimeKind::Max,
+        "count_over_time" => OverTimeKind::Count,
+        "stddev_over_time" => OverTimeKind::Stddev,
+        "stdvar_over_time" => OverTimeKind::Stdvar,
+        "last_over_time" => OverTimeKind::Last,
+        "present_over_time" => OverTimeKind::Present,
+        _ => return None,
+    })
+}
+
+/// Single-pass fast path for `[agg(]rollup_over_time(selector[range])[)]`.
+///
+/// Resolves the candidate series once, reads each series' whole window once and
+/// computes its per-step rollup in a single pass (binary-searched step
+/// windows), all in parallel across series; then aggregates per step. Reuses
+/// the shared [`reduce_over_time`]/[`reduce_simple_agg`]/[`group_key`] helpers
+/// so the output is identical to [`evaluate_range_generic`] (verified by the
+/// `fast_path_matches_generic` test). Returns `None` for any unsupported shape.
+fn try_single_pass<S: QueryStore + Sync>(
+    expr: &Expr,
+    storage: &S,
+    start_ms: i64,
+    end_ms: i64,
+    step_ms: i64,
+) -> Option<Result<Vec<RangeVectorElement>, EvalError>> {
+    use rayon::prelude::*;
+
+    // Match optional simple aggregation wrapping a `*_over_time` call.
+    let (agg, fc): (Option<&crate::ast::AggregationExpr>, &crate::ast::FunctionCall) = match expr {
+        Expr::Aggregation(a) => {
+            if a.param.is_some() || reduce_simple_agg(a.op, &[]).is_none() {
+                return None;
+            }
+            match a.arg.as_ref() {
+                Expr::FunctionCall(fc) => (Some(a), fc),
+                _ => return None,
+            }
+        }
+        Expr::FunctionCall(fc) => (None, fc),
+        _ => return None,
+    };
+    let kind = over_time_kind(&fc.name)?;
+    if fc.args.len() != 1 {
+        return None;
+    }
+    let sel = match &fc.args[0] {
+        Expr::VectorSelector(s) => s,
+        _ => return None,
+    };
+    let range_ms = sel.range_ms?;
+    let mut bare = sel.clone();
+    bare.range_ms = None;
+
+    // Step timestamps (same enumeration as the generic loop).
+    let mut steps = Vec::new();
+    let mut t = start_ms;
+    while t <= end_ms {
+        steps.push(t);
+        t = match t.checked_add(step_ms) {
+            Some(n) => n,
+            None => break,
+        };
+    }
+
+    // Candidate series, resolved exactly once.
+    let names: Vec<Vec<u8>> = candidate_series(storage, &bare)
+        .into_iter()
+        .filter(|n| matches_selector(n, &bare))
+        .collect();
+    let lo = start_ms.saturating_sub(range_ms);
+    let window = TimeRange { min_timestamp_ms: lo, max_timestamp_ms: end_ms };
+
+    // Read + roll up each series in parallel. `step_vals[i]` is the rollup for
+    // `steps[i]`, or `None` if that step's window is empty (matching the
+    // generic path, which omits empty windows).
+    let per_series: Result<Vec<(Vec<u8>, Vec<Option<f64>>)>, EvalError> = names
+        .into_par_iter()
+        .map(|name| {
+            let samples = storage
+                .search_by_metric_name(&name, window)
+                .map_err(|e| EvalError::Storage(e.to_string()))?;
+            let ts: Vec<i64> = samples.iter().map(|s| s.timestamp_ms).collect();
+            let vals: Vec<f64> = samples.iter().map(|s| s.value as f64).collect();
+            let step_vals: Vec<Option<f64>> = steps
+                .iter()
+                .map(|&st| {
+                    let wlo = ts.partition_point(|&x| x < st - range_ms);
+                    let whi = ts.partition_point(|&x| x <= st);
+                    (wlo != whi).then(|| reduce_over_time(kind, &vals[wlo..whi]))
+                })
+                .collect();
+            Ok((name, step_vals))
+        })
+        .collect();
+    let per_series = match per_series {
+        Ok(v) => v,
+        Err(e) => return Some(Err(e)),
+    };
+
+    let result: Vec<RangeVectorElement> = match agg {
+        None => {
+            // No aggregation: one element per series; drop empty-window steps.
+            let mut out: Vec<RangeVectorElement> = per_series
+                .into_iter()
+                .filter_map(|(name, sv)| {
+                    let values: Vec<(i64, f64)> =
+                        steps.iter().zip(sv).filter_map(|(&t, o)| o.map(|v| (t, v))).collect();
+                    (!values.is_empty()).then_some(RangeVectorElement { metric_name: name, values })
+                })
+                .collect();
+            // Match the generic path's BTreeMap-ordered output.
+            out.sort_by(|a, b| a.metric_name.cmp(&b.metric_name));
+            out
+        }
+        Some(a) => {
+            // Group series by key once, then reduce each group across cores.
+            // Members are visited in candidate (per_series) order, so the
+            // floating-point reduction order matches the generic path exactly.
+            let mut key_to_series: BTreeMap<Vec<u8>, Vec<usize>> = BTreeMap::new();
+            for (i, (n, _)) in per_series.iter().enumerate() {
+                key_to_series.entry(group_key(n, a.grouping.as_ref())).or_default().push(i);
+            }
+            let entries: Vec<(Vec<u8>, Vec<usize>)> = key_to_series.into_iter().collect();
+            let mut out: Vec<RangeVectorElement> = entries
+                .into_par_iter()
+                .filter_map(|(key, members)| {
+                    let mut values: Vec<(i64, f64)> = Vec::new();
+                    for (si, &t) in steps.iter().enumerate() {
+                        let mut vals: Vec<f64> = Vec::with_capacity(members.len());
+                        for &m in &members {
+                            if let Some(v) = per_series[m].1[si] {
+                                vals.push(v);
+                            }
+                        }
+                        if !vals.is_empty()
+                            && let Some(av) = reduce_simple_agg(a.op, &vals)
+                        {
+                            values.push((t, av));
+                        }
+                    }
+                    (!values.is_empty()).then_some(RangeVectorElement { metric_name: key, values })
+                })
+                .collect();
+            out.sort_by(|x, y| x.metric_name.cmp(&y.metric_name));
+            out
+        }
+    };
+    Some(Ok(result))
+}
+
 pub fn evaluate_range(
+    expr: &Expr,
+    storage: &(impl QueryStore + Sync),
+    start_ms: i64,
+    end_ms: i64,
+    step_ms: i64,
+) -> Result<Vec<RangeVectorElement>, EvalError> {
+    if step_ms <= 0 {
+        return Err(EvalError::InvalidStep(step_ms));
+    }
+    if end_ms < start_ms {
+        return Err(EvalError::InvalidRange { start: start_ms, end: end_ms });
+    }
+    // Fast path for `[agg(]rollup_over_time(selector[range])[ by/without ...])`:
+    // resolve candidates once, read each series once, compute per-series step
+    // rollups in parallel, then aggregate per step — reusing the exact shared
+    // reduce helpers so results match the generic path. Falls back otherwise.
+    if let Some(r) = try_single_pass(expr, storage, start_ms, end_ms, step_ms) {
+        return r;
+    }
+    evaluate_range_generic(expr, storage, start_ms, end_ms, step_ms)
+}
+
+/// The generic per-step range evaluator (kept as the correctness reference and
+/// fallback for shapes the fast path does not handle).
+fn evaluate_range_generic(
     expr: &Expr,
     storage: &(impl QueryStore + Sync),
     start_ms: i64,
@@ -284,12 +465,6 @@ pub fn evaluate_range(
 ) -> Result<Vec<RangeVectorElement>, EvalError> {
     use rayon::prelude::*;
 
-    if step_ms <= 0 {
-        return Err(EvalError::InvalidStep(step_ms));
-    }
-    if end_ms < start_ms {
-        return Err(EvalError::InvalidRange { start: start_ms, end: end_ms });
-    }
     // Read each touched series ONCE over the whole query window and serve every
     // step's sub-window from memory, instead of re-searching (and re-opening
     // parts for) the same series at every step. The preload lower bound covers
@@ -478,6 +653,19 @@ fn evaluate_aggregation(
 
     let mut out: Vec<InstantVectorElement> = Vec::new();
     for (key, members) in groups {
+        // Simple reductions go through the shared helper so the single-pass
+        // fast path computes identically; complex ops stay inline below.
+        if let Some(v) = {
+            let vals: Vec<f64> = members.iter().map(|e| e.value).collect();
+            reduce_simple_agg(agg.op, &vals)
+        } {
+            out.push(InstantVectorElement {
+                metric_name: key,
+                timestamp_ms: ctx.timestamp_ms,
+                value: v,
+            });
+            continue;
+        }
         let agg_value = match agg.op {
             AggregationOp::Sum => members.iter().map(|e| e.value).sum::<f64>(),
             AggregationOp::Avg => {
@@ -606,6 +794,31 @@ fn evaluate_aggregation(
     // that case so groups already collapse correctly.
     let _ = GroupingKind::By;
     Ok(Value::InstantVector(out))
+}
+
+/// Reduce a group's values for the simple aggregation ops. Returns `None` for
+/// ops that need element identity or parameters (`count_values`, `topk`,
+/// `bottomk`, `quantile`) — those stay on the generic path. Shared so the
+/// single-pass fast path aggregates identically.
+fn reduce_simple_agg(op: crate::ast::AggregationOp, values: &[f64]) -> Option<f64> {
+    use crate::ast::AggregationOp as A;
+    Some(match op {
+        A::Sum => values.iter().sum::<f64>(),
+        A::Avg => {
+            let n = values.len() as f64;
+            if n == 0.0 { f64::NAN } else { values.iter().sum::<f64>() / n }
+        }
+        A::Min => values.iter().copied().fold(f64::INFINITY, f64::min),
+        A::Max => values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        A::Count => values.len() as f64,
+        A::Stddev => stddev_of_floats(values),
+        A::Stdvar => {
+            let s = stddev_of_floats(values);
+            s * s
+        }
+        A::Group => 1.0,
+        _ => return None,
+    })
 }
 
 fn stddev(members: &[InstantVectorElement]) -> f64 {
@@ -1707,24 +1920,31 @@ fn evaluate_over_time(
         }
         samples.sort_by_key(|s| s.timestamp_ms);
         let values: Vec<f64> = samples.iter().map(|s| s.value as f64).collect();
-        let value = match kind {
-            OverTimeKind::Sum => values.iter().sum::<f64>(),
-            OverTimeKind::Avg => values.iter().sum::<f64>() / values.len() as f64,
-            OverTimeKind::Min => values.iter().copied().fold(f64::INFINITY, f64::min),
-            OverTimeKind::Max => values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
-            OverTimeKind::Count => values.len() as f64,
-            OverTimeKind::Stddev => stddev_of_floats(&values),
-            OverTimeKind::Stdvar => {
-                let s = stddev_of_floats(&values);
-                s * s
-            }
-            OverTimeKind::Last => *values.last().expect("non-empty"),
-            OverTimeKind::Present => 1.0,
-        };
+        let value = reduce_over_time(kind, &values);
         // `*_over_time` retains the full series identity (unlike `rate`).
         out.push(InstantVectorElement { metric_name: name, timestamp_ms: ctx.timestamp_ms, value });
     }
     Ok(Value::InstantVector(out))
+}
+
+/// Reduce a non-empty window of sample values to a single `*_over_time` value.
+/// Shared by the generic per-step path and the single-pass fast path so both
+/// compute identically.
+fn reduce_over_time(kind: OverTimeKind, values: &[f64]) -> f64 {
+    match kind {
+        OverTimeKind::Sum => values.iter().sum::<f64>(),
+        OverTimeKind::Avg => values.iter().sum::<f64>() / values.len() as f64,
+        OverTimeKind::Min => values.iter().copied().fold(f64::INFINITY, f64::min),
+        OverTimeKind::Max => values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        OverTimeKind::Count => values.len() as f64,
+        OverTimeKind::Stddev => stddev_of_floats(values),
+        OverTimeKind::Stdvar => {
+            let s = stddev_of_floats(values);
+            s * s
+        }
+        OverTimeKind::Last => values.last().copied().unwrap_or(f64::NAN),
+        OverTimeKind::Present => 1.0,
+    }
 }
 
 fn stddev_of_floats(values: &[f64]) -> f64 {
@@ -2858,6 +3078,63 @@ mod tests {
         match v {
             Value::InstantVector(e) => e.len(),
             _ => 0,
+        }
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+    fn fast_path_matches_generic() {
+        // Multi-metric, multi-host dataset over several timestamps so windows,
+        // steps, grouping, and empty-window handling are all exercised.
+        let mut owned: Vec<(Vec<u8>, i64, i64)> = Vec::new();
+        for (mi, metric) in ["cpu_usage_user", "cpu_usage_system"].iter().enumerate() {
+            for (hi, host) in ["a", "b", "c"].iter().enumerate() {
+                for k in 0..10i64 {
+                    // Leave a gap (skip k==4) to create empty windows for some steps.
+                    if k == 4 {
+                        continue;
+                    }
+                    let name = format!("{metric}{{hostname=\"{host}\"}}").into_bytes();
+                    let ts = 1000 + k * 1000;
+                    let v = (mi as i64 + 1) * 7 + k * 3 + hi as i64 * 2;
+                    owned.push((name, ts, v));
+                }
+            }
+        }
+        let refs: Vec<(&[u8], i64, i64)> =
+            owned.iter().map(|(n, t, v)| (n.as_slice(), *t, *v)).collect();
+        let (s, _t) = open_storage(&refs);
+
+        let queries = [
+            "max_over_time(cpu_usage_user[3000ms])",
+            "avg(avg_over_time(cpu_usage_user[5000ms])) by (__name__)",
+            "max(max_over_time({__name__=~\"cpu_(usage_user|usage_system)\"}[4000ms])) by (__name__)",
+            "sum(sum_over_time({__name__=~\"cpu_(usage_user|usage_system)\"}[3000ms])) by (__name__, hostname)",
+            "max(max_over_time(cpu_usage_user{hostname=\"a\"}[2000ms])) by (__name__)",
+            "min(min_over_time(cpu_usage_system[10000ms])) by (hostname)",
+            "count(count_over_time(cpu_usage_user[5000ms])) by (__name__)",
+            "avg(avg_over_time({__name__=~\"cpu_(usage_user|usage_system)\"}[4000ms])) without (hostname)",
+        ];
+        let (start, end, step) = (1000i64, 10_000i64, 1000i64);
+
+        let norm = |mut v: Vec<RangeVectorElement>| -> Vec<(Vec<u8>, Vec<(i64, i64)>)> {
+            v.sort_by(|a, b| a.metric_name.cmp(&b.metric_name));
+            v.into_iter()
+                .map(|e| {
+                    let vals =
+                        e.values.into_iter().map(|(t, x)| (t, (x * 1e6).round() as i64)).collect();
+                    (e.metric_name, vals)
+                })
+                .collect()
+        };
+
+        for q in queries {
+            let expr = parse(q).unwrap();
+            let fast = try_single_pass(&expr, &s, start, end, step)
+                .unwrap_or_else(|| panic!("fast path should handle: {q}"))
+                .unwrap();
+            let generic = evaluate_range_generic(&expr, &s, start, end, step).unwrap();
+            assert_eq!(norm(fast), norm(generic), "fast vs generic mismatch for: {q}");
         }
     }
 
