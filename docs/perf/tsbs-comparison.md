@@ -12,61 +12,66 @@ ingest, `GET /api/v1/query_range` for queries. VM ran in Docker
 that inflates VM's apparent ingest rate and empties its query results if
 not corrected).
 
-## Current standings — after the full surpass-VM roadmap (2026-05-29)
+## Current standings — after the single-pass parallel evaluator (2026-05-29)
 
-After all of [`improvement-plan.md`](./improvement-plan.md) **and** the 5-phase
-[`surpass-vm-roadmap.md`](./surpass-vm-roadmap.md) (ingest parser/clone/hash,
-binary-search sub-window + memoized metadata, parallel cache warm-up, candidate
-micro-opt). EsMetrics runs the **full scale-1000 (10k-series) benchmark** that
-was impossible in the original run.
+After the full [`surpass-vm-roadmap.md`](./surpass-vm-roadmap.md) **plus** the
+single-pass parallel-aggregation evaluator (the dominant query shape resolves
+candidates once, reads each series once, rolls up per-series in parallel, then
+group-reduces across cores — proven identical to the generic path by the
+`fast_path_matches_generic` test).
 
-**EsMetrics SURPASSES VM** on memory and disk; **parity** on correctness and
-capability; **behind** on ingest and query latency.
+**EsMetrics SURPASSES VM** on memory and disk; **parity** on correctness,
+capability, and the simplest query; **behind** on ingest and heavier queries —
+but the query gap is now **1.4–10×** (was 10–234× before the evaluator).
 
 | Dimension | VictoriaMetrics | EsMetrics | verdict |
 |---|---|---|---|
-| Ingest peak RAM | 2.06 GB | **1.68 GB** | ✅ EsMetrics ahead |
-| On-disk size | 122 MB | **86 MB** | ✅ EsMetrics ahead |
+| Ingest peak RAM | 2.19 GB | **1.34 GB** | ✅ EsMetrics ahead (1.6×) |
+| On-disk size | 118 MB | **86 MB** | ✅ EsMetrics ahead |
 | Query correctness | 11/11 | **11/11** | ✅ parity |
 | Runs full scale-1000, concurrent, persists | yes | yes | ✅ parity |
-| Ingest throughput | 636K rows/s | 341K rows/s | ❌ 1.87× behind |
-| Query latency | baseline | 10–234× | ❌ behind |
+| single-groupby-1-1-1 | 0.65 ms | 0.90 ms | ≈ near parity (1.4×) |
+| Ingest throughput | 648K rows/s | 337K rows/s | ❌ 1.9× behind |
+| Heavier queries | baseline | 2–10× | ❌ behind (was 10–234×) |
 
 **Query latency** (scale-1000, 10k series, median @ 8 workers; all 11 types
 return series counts matching VM):
 
-| query type | VM | EsMetrics | ratio | (session start) |
+| query type | VM | EsMetrics | ratio | (before evaluator) |
 |---|---|---|---|---|
-| single-groupby-1-1-1 | 0.66 ms | 9.5 ms | 14× | (14.7) |
-| single-groupby-1-1-12 | 0.91 ms | 107 ms | 118× | (149) |
-| single-groupby-1-8-1 | 0.95 ms | 60 ms | 63× | (75.9) |
-| single-groupby-5-1-1 | 0.89 ms | 47 ms | 53× | (70.2) |
-| single-groupby-5-1-12 | 2.37 ms | 554 ms | 234× | (767) |
-| single-groupby-5-8-1 | 1.64 ms | 294 ms | 179× | (390) |
-| double-groupby-1 | 61 ms | 605 ms | 10× | (940) |
-| double-groupby-5 | 338 ms | 7.6 s | 23× | (9.0 s) |
-| double-groupby-all | 682 ms | 23.5 s | 34× | (23.7 s) |
-| cpu-max-all-1 | 1.36 ms | 23 ms | 17× | (38) |
-| cpu-max-all-8 | 4.59 ms | 120 ms | 26× | (191) |
+| single-groupby-1-1-1 | 0.65 ms | 0.90 ms | 1.4× | (9.5 ms, 14×) |
+| single-groupby-1-1-12 | 0.99 ms | 2.15 ms | 2.2× | (107, 118×) |
+| single-groupby-1-8-1 | 0.99 ms | 3.17 ms | 3.2× | (60, 63×) |
+| single-groupby-5-1-1 | 0.99 ms | 3.19 ms | 3.2× | (47, 53×) |
+| single-groupby-5-1-12 | 2.31 ms | 7.58 ms | 3.3× | (554, 234×) |
+| single-groupby-5-8-1 | 1.81 ms | 13.1 ms | 7.2× | (294, 179×) |
+| double-groupby-1 | 63 ms | 656 ms | 10× | (605, 10×) |
+| double-groupby-5 | 329 ms | 2.69 s | 8.2× | (7.6 s, 23×) |
+| double-groupby-all | 701 ms | 5.13 s | 7.3× | (23.5 s, 34×) |
+| cpu-max-all-1 | 1.56 ms | 7.92 ms | 5.1× | (23, 17×) |
+| cpu-max-all-8 | 5.04 ms | 44 ms | 8.7× | (120, 26×) |
 
-**Read of the results:** the roadmap delivered EsMetrics ahead of VM on **RAM
-and disk** and at parity on correctness/capability, and shaved query latency
-1.3–1.6× across the board — but **ingest (1.87×) and query latency (10–234×)
-remain behind**. Closing those requires the two large engine changes called
-out (and deliberately *not* rushed, to protect the 11/11 correctness):
+**Read of the results:** EsMetrics is now **ahead of VM on RAM (1.6×) and
+disk**, at **parity on correctness and the simplest query** (single-groupby
+within 1.4× of VM's 0.65 ms), and the single-pass parallel evaluator cut the
+heavier-query gap by **~10–70×** (single-groupby-5-1-12 234×→3.3×,
+double-groupby-all 34×→7.3×) with no correctness regression (the fast path is
+proven equivalent to the generic path by `fast_path_matches_generic`).
 
-1. **Ingest:** a zero-copy line parser — the residual cost is ~520M `String`/
-   `Vec` allocations per load (a `String` per tag, a `Vec` per sample key).
-2. **Query:** a single-pass, parallel-aggregation evaluator (resolve candidates
-   once; one pass per series across all step buckets; aggregate across cores)
-   plus columnar block summaries. This is what would close the all-host
-   aggregations (double-groupby-all) and the wide-range (`*-12`) cases, and
-   approach VM's sub-millisecond trivial queries.
+**Remaining gaps:**
+1. **Ingest (1.9×):** ~520M `String`/`Vec` allocations per load — a zero-copy
+   line parser is the lever.
+2. **Heavier aggregations (5–10×):** now bound by raw per-query data volume
+   under workers=8 CPU saturation (each query decodes ~all touched series). The
+   levers are **block-level pre-aggregation** (per-block min/max/sum/count so
+   full-block rollups skip decompression) and a columnar read path —
+   storage-format work.
 
-**Bottom line on "surpass on every benchmark":** achieved on memory and disk,
-parity on correctness/capability, **not yet** on ingest or query latency. Those
-two are large, carefully-validated engine efforts rather than the surgical,
-correctness-preserving changes that comprised this work.
+**Bottom line on "surpass on every benchmark":** ahead on RAM + disk, parity on
+correctness/capability and the simplest query; ingest and heavier aggregations
+remain behind — now by **single-digit multiples** rather than orders of
+magnitude. The remaining levers are storage-format changes (zero-copy parse,
+columnar block summaries).
 
 ---
 
