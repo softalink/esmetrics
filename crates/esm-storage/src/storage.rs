@@ -996,11 +996,20 @@ impl Storage {
         tsid: Tsid,
         range: TimeRange,
     ) -> Result<Vec<StoredSample>, StorageError> {
-        // Merge on-disk parts and the in-memory pending buffer through a
-        // timestamp-keyed map so a query sees freshly-ingested (unflushed)
-        // data. The map gives ordering + dedup for free; pending is overlaid
-        // last so the newest write wins on identical timestamps.
-        let mut merged: BTreeMap<i64, i64> = BTreeMap::new();
+        // Accumulate every in-range sample into a flat Vec, in priority order:
+        // parts oldest→newest (the `parts_index` order), then the in-memory
+        // pending buffer last — so the newest write wins on duplicate
+        // timestamps. A single part's blocks for one tsid arrive strictly
+        // time-ordered and non-overlapping, so the overwhelmingly common case
+        // (one contributing part, no pending) yields an already-sorted, unique
+        // Vec needing no further work — avoiding a per-sample `BTreeMap` insert
+        // (the dominant cost for heavy aggregations that read thousands of
+        // samples per series). Only when timestamps actually arrive out of
+        // order or duplicated (multiple overlapping parts / pending) do we pay
+        // a single sort + dedup.
+        let mut out: Vec<StoredSample> = Vec::new();
+        let mut last_ts = i64::MIN;
+        let mut needs_merge = false;
         // Iterate the cached part list (no per-query `read_dir`) and prune by
         // time range before opening anything.
         for meta in &self.parts_index {
@@ -1034,7 +1043,11 @@ impl Storage {
                     .map_err(|e| StorageError::ReadPart { path: part_path.clone(), source: e })?;
                 for (ts, val) in timestamps.iter().zip(values.iter()) {
                     if *ts >= range.min_timestamp_ms && *ts <= range.max_timestamp_ms {
-                        merged.insert(*ts, *val);
+                        if *ts <= last_ts {
+                            needs_merge = true;
+                        }
+                        last_ts = *ts;
+                        out.push(StoredSample { timestamp_ms: *ts, value: *val });
                     }
                 }
             }
@@ -1043,14 +1056,30 @@ impl Storage {
         if let Some(buf) = self.pending.get(&tsid) {
             for &(ts, v) in buf {
                 if ts >= range.min_timestamp_ms && ts <= range.max_timestamp_ms {
-                    merged.insert(ts, v);
+                    if ts <= last_ts {
+                        needs_merge = true;
+                    }
+                    last_ts = ts;
+                    out.push(StoredSample { timestamp_ms: ts, value: v });
                 }
             }
         }
-        Ok(merged
-            .into_iter()
-            .map(|(timestamp_ms, value)| StoredSample { timestamp_ms, value })
-            .collect())
+        if needs_merge {
+            // Stable sort keeps equal-timestamp samples in push (priority)
+            // order; the dedup below then keeps the last (newest) per timestamp.
+            out.sort_by_key(|s| s.timestamp_ms);
+            let mut w = 0;
+            for r in 0..out.len() {
+                if w > 0 && out[w - 1].timestamp_ms == out[r].timestamp_ms {
+                    out[w - 1] = out[r];
+                } else {
+                    out[w] = out[r];
+                    w += 1;
+                }
+            }
+            out.truncate(w);
+        }
+        Ok(out)
     }
 
     /// Look up the TSID for an already-ingested metric, if known.

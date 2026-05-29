@@ -113,3 +113,42 @@ sharding already masks — **ingest already beats VM**. Per the simplicity
 mandate and the history of neutral/regressive deep ingest changes, lever 1 is
 **deferred**: documented, understood, and not worth the architectural risk
 unless a future goal makes single-thread ingest the binding constraint again.
+
+# Heavy-aggregation decode layout
+
+Goal: close the heavy-aggregation gap (double-groupby / cpu-max-all were 5–10×
+behind VM). The single-pass parallel evaluator already reads each candidate
+series once over the query window; the cost is the per-series read +
+decode + reduce. A read-path profiler
+(`apps/esm-single/tests/profile_query.rs`, 1000 series × 4321 samples in a 12 h
+window) isolated the read at **14.06M samples/s** — far slower than a decode
+should be (~71 ns/sample), pointing at `search_by_tsid`'s per-sample
+`BTreeMap<i64,i64>` insert (the same O(log n)-per-element pattern as the ingest
+pending map).
+
+**Fix:** accumulate decoded samples into a flat `Vec<StoredSample>` in
+priority order (parts oldest→newest, then pending). A single part's blocks for
+one tsid arrive strictly time-ordered and non-overlapping, so the common case
+(one contributing part, no pending) yields an already-sorted, unique Vec with
+**no sort and no dedup** — the per-sample tree insert is gone. A `needs_merge`
+flag (set when a timestamp arrives ≤ the previous one) triggers a single stable
+sort + last-wins dedup only when parts/pending actually overlap, preserving the
+prior "newest write wins on duplicate ts" semantics.
+
+Result: read path **14.06M → 31.48M samples/s (2.24×)**. End-to-end TSBS
+(scale-1000, median @ 8 workers):
+
+| query | before | after | gap to VM: was → now |
+|-------|--------|-------|----------------------|
+| double-groupby-all | 5.13 s | **1.97 s** | 7.3× → 2.8× |
+| double-groupby-5   | 2.69 s | **969 ms** | 8.2× → 2.9× |
+| double-groupby-1   | 656 ms | **232 ms** | 10×  → 3.7× |
+| cpu-max-all-8      | 44 ms  | **24.4 ms**| 8.7× → 4.8× |
+| cpu-max-all-1      | 7.92 ms| **5.40 ms**| 5.1× → 3.5× |
+
+Verified equivalent by `fast_path_matches_generic` + the disk/pending dedup
+tests. The residual ~3–5× is raw decode/reduce volume — including ~1.9×
+over-decode (a 12 h window still decodes a full ~22.8 h block). Next lever:
+early-terminate the block decode past the range end (recovers the tail
+over-decode without changing block size, compression, or ingest), or finer
+blocks (regresses the ingest/disk wins).

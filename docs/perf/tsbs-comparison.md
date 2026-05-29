@@ -40,37 +40,35 @@ that gap is now **1.4–10×** (was 10–234× before the evaluator).
 **Query latency** (scale-1000, 10k series, median @ 8 workers; all 11 types
 return series counts matching VM):
 
-| query type | VM | EsMetrics | ratio | (before evaluator) |
+| query type | VM | EsMetrics | ratio | (before decode-layout fix) |
 |---|---|---|---|---|
-| single-groupby-1-1-1 | 0.65 ms | 0.90 ms | 1.4× | (9.5 ms, 14×) |
-| single-groupby-1-1-12 | 0.99 ms | 2.15 ms | 2.2× | (107, 118×) |
-| single-groupby-1-8-1 | 0.99 ms | 3.17 ms | 3.2× | (60, 63×) |
-| single-groupby-5-1-1 | 0.99 ms | 3.19 ms | 3.2× | (47, 53×) |
-| single-groupby-5-1-12 | 2.31 ms | 7.58 ms | 3.3× | (554, 234×) |
-| single-groupby-5-8-1 | 1.81 ms | 13.1 ms | 7.2× | (294, 179×) |
-| double-groupby-1 | 63 ms | 656 ms | 10× | (605, 10×) |
-| double-groupby-5 | 329 ms | 2.69 s | 8.2× | (7.6 s, 23×) |
-| double-groupby-all | 701 ms | 5.13 s | 7.3× | (23.5 s, 34×) |
-| cpu-max-all-1 | 1.56 ms | 7.92 ms | 5.1× | (23, 17×) |
-| cpu-max-all-8 | 5.04 ms | 44 ms | 8.7× | (120, 26×) |
+| single-groupby-1-1-1 | 0.65 ms | 0.99 ms | 1.5× | (0.90 ms, 1.4×) |
+| double-groupby-1 | 63 ms | 232 ms | 3.7× | (656 ms, 10×) |
+| double-groupby-5 | 329 ms | 969 ms | 2.9× | (2.69 s, 8.2×) |
+| double-groupby-all | 701 ms | 1.97 s | 2.8× | (5.13 s, 7.3×) |
+| cpu-max-all-1 | 1.56 ms | 5.40 ms | 3.5× | (7.92 ms, 5.1×) |
+| cpu-max-all-8 | 5.04 ms | 24.4 ms | 4.8× | (44 ms, 8.7×) |
 
-**Read of the results:** EsMetrics is now **ahead of VM on RAM (1.6×) and
-disk**, at **parity on correctness and the simplest query** (single-groupby
-within 1.4× of VM's 0.65 ms), and the single-pass parallel evaluator cut the
-heavier-query gap by **~10–70×** (single-groupby-5-1-12 234×→3.3×,
-double-groupby-all 34×→7.3×) with no correctness regression (the fast path is
-proven equivalent to the generic path by `fast_path_matches_generic`).
+**Read of the results:** EsMetrics is now **ahead of VM on RAM (1.6×), disk,
+and ingest**, at **parity on correctness and the simplest query**. The
+single-pass parallel evaluator cut the heavier-query gap by ~10–70× (34×→7.3× on
+double-groupby-all), and the **decode-layout fix** (the per-series read no
+longer builds a per-sample `BTreeMap` — it accumulates into a flat sorted Vec,
+sorting + deduping only when parts/pending actually overlap; read path
+14M→31M samples/s, 2.24×) then cut the heavy-aggregation gap a further **2.6–
+2.8×** (double-groupby-all 7.3×→2.8×). No correctness regression — the fast path
+is proven equivalent to the generic path by `fast_path_matches_generic`, and the
+disk+pending dedup tests cover the merge path.
 
-**Remaining gaps:**
-1. **Ingest (1.9×):** ~520M `String`/`Vec` allocations per load — a zero-copy
-   line parser is the lever.
-2. **Heavier aggregations (5–10×):** bound by raw per-query data volume under
-   workers=8 CPU saturation (each query decodes ~all touched series). *Tried
-   and reverted:* block-level pre-aggregation (rollup windows 1m–1h are far
-   smaller than the ~23 h blocks, so no window contains a whole block) and a
-   batched per-part read (it caps parallelism at the part count, losing to the
-   per-series parallel read). The remaining lever is reducing decode volume
-   per query — finer block granularity or a columnar value layout.
+**Remaining gap — heavier aggregations (now ~3–5×):** bound by raw per-query
+data volume under workers=8 CPU saturation (each query decodes ~all touched
+series). *Tried and reverted:* block-level pre-aggregation (rollup windows
+1m–1h are far smaller than the ~23 h blocks, so no window contains a whole
+block) and a batched per-part read (caps parallelism at the part count, losing
+to the per-series parallel read). The remaining lever is cutting decode volume:
+a 12 h query still decodes a full ~22.8 h block (`MAX_ROWS_PER_BLOCK=8192`) —
+early-terminating the decode past the range end, or finer blocks, would recover
+the over-decode, traded against the ingest/disk wins.
 
 **Bottom line on "surpass on every benchmark":** ahead on RAM + disk **and
 ingest**; parity on correctness/capability and the simplest query; only heavier
