@@ -127,6 +127,15 @@ pub struct StoredSample {
     pub value: i64,
 }
 
+/// Cached metadata for one on-disk part. Lets queries prune parts by time
+/// range without a `read_dir` + part-header open per call.
+#[derive(Debug, Clone)]
+struct PartMeta {
+    path: PathBuf,
+    min_ts: i64,
+    max_ts: i64,
+}
+
 /// Top-level storage engine.
 #[allow(missing_debug_implementations)]
 pub struct Storage {
@@ -165,6 +174,11 @@ pub struct Storage {
     /// incremental-flush trigger so memory stays bounded during sustained
     /// ingest instead of growing until an explicit `flush()`/`shutdown()`.
     pending_samples: usize,
+
+    /// Cached time-range metadata for every on-disk part. Maintained
+    /// incrementally on flush/merge/retention so reads prune parts by time
+    /// range without re-scanning the parts directory on every query.
+    parts_index: Vec<PartMeta>,
 }
 
 impl Storage {
@@ -197,6 +211,7 @@ impl Storage {
             index_dirty: false,
             next_part_id: 0,
             pending_samples: 0,
+            parts_index: Vec::new(),
         };
         storage.load_index()?;
         storage.bootstrap_from_disk()?;
@@ -346,6 +361,11 @@ impl Storage {
             // Discover TSIDs in this part.
             let mut reader = BlockStreamReader::open(&part_path)
                 .map_err(|e| StorageError::OpenPart { path: part_path.clone(), source: e })?;
+            self.parts_index.push(PartMeta {
+                path: part_path.clone(),
+                min_ts: reader.part_header.min_timestamp,
+                max_ts: reader.part_header.max_timestamp,
+            });
             while let Some(block) = reader
                 .next_block()
                 .map_err(|e| StorageError::ReadPart { path: part_path.clone(), source: e })?
@@ -438,7 +458,14 @@ impl Storage {
                     .map_err(|e| StorageError::WriteBlock { path: part_path.clone(), source: e })?;
             }
         }
-        writer.finish().map_err(|e| StorageError::FinishPart { path: part_path, source: e })?;
+        let header = writer
+            .finish()
+            .map_err(|e| StorageError::FinishPart { path: part_path.clone(), source: e })?;
+        self.parts_index.push(PartMeta {
+            path: part_path,
+            min_ts: header.min_timestamp,
+            max_ts: header.max_timestamp,
+        });
         // Opportunistically merge small parts. Keeps part count bounded so
         // read amplification stays sane.
         self.maybe_merge_small_parts()?;
@@ -538,7 +565,7 @@ impl Storage {
                     .map_err(|e| StorageError::WriteBlock { path: out_path.clone(), source: e })?;
             }
         }
-        writer
+        let header = writer
             .finish()
             .map_err(|e| StorageError::FinishPart { path: out_path.clone(), source: e })?;
         // Remove input parts only after the output is fsynced.
@@ -546,6 +573,13 @@ impl Storage {
             std::fs::remove_dir_all(p)?;
         }
         esm_platform::durability::fsync_dir(&self.parts_dir)?;
+        // Keep the parts cache consistent: drop merged inputs, add the output.
+        self.parts_index.retain(|m| !parts.contains(&m.path));
+        self.parts_index.push(PartMeta {
+            path: out_path,
+            min_ts: header.min_timestamp,
+            max_ts: header.max_timestamp,
+        });
         Ok(())
     }
 
@@ -679,38 +713,23 @@ impl Storage {
     /// # Errors
     /// Returns [`StorageError`] on I/O failure or part corruption.
     pub fn enforce_retention(&mut self, cutoff_ms: i64) -> Result<usize, StorageError> {
-        let mut removed = 0_usize;
-        let entries = match std::fs::read_dir(&self.parts_dir) {
-            Ok(it) => it,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-            Err(e) => return Err(e.into()),
-        };
-        for entry in entries {
-            let entry = entry?;
-            if !entry.file_type()?.is_dir() {
-                continue;
-            }
-            let p = entry.path();
-            let mut reader = BlockStreamReader::open(&p)
-                .map_err(|e| StorageError::OpenPart { path: p.clone(), source: e })?;
-            let mut part_max = i64::MIN;
-            while let Some(block) = reader
-                .next_block()
-                .map_err(|e| StorageError::ReadPart { path: p.clone(), source: e })?
-            {
-                if block.header.max_timestamp > part_max {
-                    part_max = block.header.max_timestamp;
-                }
-            }
-            if part_max != i64::MIN && part_max < cutoff_ms {
-                std::fs::remove_dir_all(&p)?;
-                removed += 1;
-            }
+        // Use the cached per-part time ranges to find fully-stale parts without
+        // re-reading every block. A part is dropped only if its newest sample
+        // is below the cutoff.
+        let stale: Vec<PathBuf> = self
+            .parts_index
+            .iter()
+            .filter(|m| m.max_ts < cutoff_ms)
+            .map(|m| m.path.clone())
+            .collect();
+        for p in &stale {
+            std::fs::remove_dir_all(p)?;
         }
-        if removed > 0 {
+        if !stale.is_empty() {
+            self.parts_index.retain(|m| !stale.contains(&m.path));
             esm_platform::durability::fsync_dir(&self.parts_dir)?;
         }
-        Ok(removed)
+        Ok(stale.len())
     }
 
     /// Search for samples matching `metric_name` within `range`.
@@ -745,55 +764,43 @@ impl Storage {
         // data. The map gives ordering + dedup for free; pending is overlaid
         // last so the newest write wins on identical timestamps.
         let mut merged: BTreeMap<i64, i64> = BTreeMap::new();
-        match std::fs::read_dir(&self.parts_dir) {
-            Ok(entries) => {
-                for entry in entries {
-                    let entry = entry?;
-                    if !entry.file_type()?.is_dir() {
-                        continue;
-                    }
-                    let part_path = entry.path();
-                    let mut reader = BlockStreamReader::open(&part_path).map_err(|e| {
-                        StorageError::OpenPart { path: part_path.clone(), source: e }
-                    })?;
-                    // Quick skip via part-level min/max timestamps.
-                    if reader.part_header.max_timestamp < range.min_timestamp_ms
-                        || reader.part_header.min_timestamp > range.max_timestamp_ms
-                    {
-                        continue;
-                    }
-                    // Fast-forward to the index block whose start tsid <= target.
-                    reader.seek_to_tsid(tsid);
-                    while let Some(header) = reader.next_block_header().map_err(|e| {
-                        StorageError::ReadPart { path: part_path.clone(), source: e }
-                    })? {
-                        // Blocks are sorted by (tsid, min_timestamp). Once we walk
-                        // past `tsid` we're done with this part.
-                        if header.tsid > tsid {
-                            break;
-                        }
-                        if header.tsid != tsid {
-                            continue;
-                        }
-                        if header.max_timestamp < range.min_timestamp_ms
-                            || header.min_timestamp > range.max_timestamp_ms
-                        {
-                            continue;
-                        }
-                        let (timestamps, values) =
-                            reader.read_data_block_for(&header).map_err(|e| {
-                                StorageError::ReadPart { path: part_path.clone(), source: e }
-                            })?;
-                        for (ts, val) in timestamps.iter().zip(values.iter()) {
-                            if *ts >= range.min_timestamp_ms && *ts <= range.max_timestamp_ms {
-                                merged.insert(*ts, *val);
-                            }
-                        }
+        // Iterate the cached part list (no per-query `read_dir`) and prune by
+        // time range before opening anything.
+        for meta in &self.parts_index {
+            if meta.max_ts < range.min_timestamp_ms || meta.min_ts > range.max_timestamp_ms {
+                continue;
+            }
+            let part_path = &meta.path;
+            let mut reader = BlockStreamReader::open(part_path)
+                .map_err(|e| StorageError::OpenPart { path: part_path.clone(), source: e })?;
+            // Fast-forward to the index block whose start tsid <= target.
+            reader.seek_to_tsid(tsid);
+            while let Some(header) = reader
+                .next_block_header()
+                .map_err(|e| StorageError::ReadPart { path: part_path.clone(), source: e })?
+            {
+                // Blocks are sorted by (tsid, min_timestamp). Once we walk
+                // past `tsid` we're done with this part.
+                if header.tsid > tsid {
+                    break;
+                }
+                if header.tsid != tsid {
+                    continue;
+                }
+                if header.max_timestamp < range.min_timestamp_ms
+                    || header.min_timestamp > range.max_timestamp_ms
+                {
+                    continue;
+                }
+                let (timestamps, values) = reader
+                    .read_data_block_for(&header)
+                    .map_err(|e| StorageError::ReadPart { path: part_path.clone(), source: e })?;
+                for (ts, val) in timestamps.iter().zip(values.iter()) {
+                    if *ts >= range.min_timestamp_ms && *ts <= range.max_timestamp_ms {
+                        merged.insert(*ts, *val);
                     }
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
         }
         // Overlay in-memory pending samples for this TSID.
         if let Some(buf) = self.pending.get(&tsid) {

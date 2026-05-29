@@ -56,11 +56,19 @@ series with `matches_selector`); they were two specific bugs:
 - Note: resolution is still O(all series) per query (no inverted index yet) —
   a *perf* follow-up that overlaps with P3, not a correctness gap.
 
-## P3 — Query read-path efficiency  *(fixes 13–672× latency)*
-**Fixes:** `search_by_tsid` re-`read_dir`s + re-opens every part per call.
-- Cache open part handles + part headers; keep a per-part TSID→block offset
-  map in memory; prune parts by time range without opening them.
-- **Verify:** single-groupby latencies within a small multiple of VM (not 100×).
+## P3 — Query read-path efficiency  ✅ PARTIAL (2026-05-29)
+**Was:** `search_by_tsid` did a `read_dir` + opened every part on every call.
+- ✅ Added an in-memory `parts_index` (per-part min/max timestamp), maintained
+  incrementally on flush/merge/retention. Queries iterate it and **prune parts
+  by time range before opening** — no per-query `read_dir`. Also rewrote
+  `enforce_retention` to use it (no longer re-reads every block).
+- **Result (med latency @ 8 workers, vs original baseline):**
+  single-groupby-1-1-1 52.7→7.6 ms, -1-1-12 612→89 ms, double-groupby-1
+  103→16 ms — ~**6.9×** on time-pruned queries (combined with P2/P4).
+- **Still pending:** resolution is still O(all series) per query
+  (`iter_metric_names` + `matches_selector` scan). A true **inverted label
+  index** (label→postings) is the next lever for regex/multi-host queries;
+  per-part TSID→block-offset caching would cut repeated part opens further.
 
 ## P4 — Concurrency  *(query side ✅ DONE 2026-05-29; ingest side pending)*
 **Was:** global `Arc<Mutex<Storage>>` serialized all work.
