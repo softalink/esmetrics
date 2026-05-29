@@ -1939,15 +1939,9 @@ fn evaluate_over_time(
 fn reduce_over_time_samples(kind: OverTimeKind, w: &[StoredSample]) -> f64 {
     match kind {
         OverTimeKind::Sum => w.iter().map(|s| s.value as f64).sum::<f64>(),
-        OverTimeKind::Avg => {
-            w.iter().map(|s| s.value as f64).sum::<f64>() / w.len() as f64
-        }
-        OverTimeKind::Min => {
-            w.iter().map(|s| s.value as f64).fold(f64::INFINITY, f64::min)
-        }
-        OverTimeKind::Max => {
-            w.iter().map(|s| s.value as f64).fold(f64::NEG_INFINITY, f64::max)
-        }
+        OverTimeKind::Avg => w.iter().map(|s| s.value as f64).sum::<f64>() / w.len() as f64,
+        OverTimeKind::Min => w.iter().map(|s| s.value as f64).fold(f64::INFINITY, f64::min),
+        OverTimeKind::Max => w.iter().map(|s| s.value as f64).fold(f64::NEG_INFINITY, f64::max),
         OverTimeKind::Count => w.len() as f64,
         OverTimeKind::Last => w.last().map_or(f64::NAN, |s| s.value as f64),
         OverTimeKind::Present => 1.0,
@@ -2536,7 +2530,7 @@ fn candidate_series(storage: &impl QueryStore, sel: &VectorSelector) -> Vec<Vec<
     // does the exact filtering afterwards.
     let mut sets: Vec<Vec<Vec<u8>>> = Vec::new();
 
-    // Metric-name anchor: literal `sel.name` / `__name__="..."`, else `__name__=~regex`.
+    // Literal metric-name anchor: `sel.name` / `__name__="..."`.
     let literal = sel.name.as_deref().or_else(|| {
         sel.matchers
             .iter()
@@ -2545,16 +2539,6 @@ fn candidate_series(storage: &impl QueryStore, sel: &VectorSelector) -> Vec<Vec<
     });
     if let Some(name) = literal {
         sets.push(storage.series_for_metric_name(name.as_bytes()));
-    } else if let Some(m) =
-        sel.matchers.iter().find(|m| m.name == "__name__" && m.op == MatchOp::RegexMatch)
-    {
-        let mut out = Vec::new();
-        for dn in storage.distinct_metric_names() {
-            if std::str::from_utf8(&dn).is_ok_and(|s| regex_full_match(s, &m.value)) {
-                out.extend(storage.series_for_metric_name(&dn));
-            }
-        }
-        sets.push(out);
     }
 
     // Equality label anchors (non-empty value; `__name__` handled above). An
@@ -2564,6 +2548,26 @@ fn candidate_series(storage: &impl QueryStore, sel: &VectorSelector) -> Vec<Vec<
         if m.op == MatchOp::Equal && m.name != "__name__" && !m.value.is_empty() {
             sets.push(storage.series_for_label(m.name.as_bytes(), m.value.as_bytes()));
         }
+    }
+
+    // `__name__=~regex` anchor: only when nothing cheaper anchors the set.
+    // Resolving it scans every distinct metric name and unions all matching
+    // metrics' full series lists — for `cpu_(...)` that's all 10 metrics ×
+    // every host. When an equality anchor (e.g. `hostname="h"`) is present its
+    // posting is already a valid superset (the caller's `matches_selector`
+    // applies the regex exactly), so skip the scan and avoid materializing
+    // thousands of names only to intersect them away.
+    if sets.is_empty()
+        && let Some(m) =
+            sel.matchers.iter().find(|m| m.name == "__name__" && m.op == MatchOp::RegexMatch)
+    {
+        let mut out = Vec::new();
+        for dn in storage.distinct_metric_names() {
+            if std::str::from_utf8(&dn).is_ok_and(|s| regex_full_match(s, &m.value)) {
+                out.extend(storage.series_for_metric_name(&dn));
+            }
+        }
+        sets.push(out);
     }
 
     if sets.is_empty() {
