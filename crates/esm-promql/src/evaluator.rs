@@ -41,7 +41,8 @@
 
 use std::collections::BTreeMap;
 
-use esm_storage::{QueryStore, TimeRange};
+use esm_storage::timeseries::Tsid;
+use esm_storage::{QueryStore, StorageError, StoredSample, TimeRange};
 use thiserror::Error;
 
 use crate::ast::{
@@ -118,6 +119,85 @@ pub struct RangeVectorElement {
 ///
 /// # Errors
 /// See [`EvalError`].
+/// Largest `[range]` (in ms) over all selectors in `expr`, including subquery
+/// ranges. Zero if the expression has no range vector.
+fn max_selector_range(expr: &Expr) -> i64 {
+    match expr {
+        Expr::VectorSelector(s) => s.range_ms.unwrap_or(0),
+        Expr::Paren(e) | Expr::Unary(_, e) => max_selector_range(e),
+        Expr::Binary(b) => max_selector_range(&b.lhs).max(max_selector_range(&b.rhs)),
+        Expr::Aggregation(a) => {
+            let mut m = max_selector_range(&a.arg);
+            if let Some(p) = &a.param {
+                m = m.max(max_selector_range(p));
+            }
+            m
+        }
+        Expr::FunctionCall(fc) => fc.args.iter().map(max_selector_range).max().unwrap_or(0),
+        Expr::Subquery(sq) => max_selector_range(&sq.inner).max(sq.range_ms),
+        Expr::NumberLiteral(_) | Expr::StringLiteral(_) => 0,
+    }
+}
+
+/// Per-query read cache wrapping a [`QueryStore`]. The first
+/// `search_by_metric_name` for a series reads the whole preload window once and
+/// memoizes it; later step queries are served from that buffer (filtered to the
+/// requested sub-range). Metadata lookups delegate to the inner store. Lives
+/// for a single `evaluate_range` call; single-threaded, hence `RefCell`.
+struct RangeCache<'a, S: QueryStore> {
+    inner: &'a S,
+    lo: i64,
+    hi: i64,
+    series: std::cell::RefCell<std::collections::HashMap<Vec<u8>, Vec<StoredSample>>>,
+}
+
+impl<'a, S: QueryStore> RangeCache<'a, S> {
+    fn new(inner: &'a S, lo: i64, hi: i64) -> Self {
+        Self { inner, lo, hi, series: std::cell::RefCell::new(std::collections::HashMap::new()) }
+    }
+}
+
+impl<S: QueryStore> QueryStore for RangeCache<'_, S> {
+    fn iter_metric_names(&self) -> Vec<(Vec<u8>, Tsid)> {
+        self.inner.iter_metric_names()
+    }
+
+    fn search_by_metric_name(
+        &self,
+        metric_name: &[u8],
+        range: TimeRange,
+    ) -> Result<Vec<StoredSample>, StorageError> {
+        if !self.series.borrow().contains_key(metric_name) {
+            let full = self.inner.search_by_metric_name(
+                metric_name,
+                TimeRange { min_timestamp_ms: self.lo, max_timestamp_ms: self.hi },
+            )?;
+            self.series.borrow_mut().insert(metric_name.to_vec(), full);
+        }
+        let cache = self.series.borrow();
+        let all = &cache[metric_name];
+        Ok(all
+            .iter()
+            .copied()
+            .filter(|s| {
+                s.timestamp_ms >= range.min_timestamp_ms && s.timestamp_ms <= range.max_timestamp_ms
+            })
+            .collect())
+    }
+
+    fn lookup_tsid(&self, metric_name: &[u8]) -> Option<Tsid> {
+        self.inner.lookup_tsid(metric_name)
+    }
+
+    fn series_for_metric_name(&self, name_part: &[u8]) -> Vec<Vec<u8>> {
+        self.inner.series_for_metric_name(name_part)
+    }
+
+    fn distinct_metric_names(&self) -> Vec<Vec<u8>> {
+        self.inner.distinct_metric_names()
+    }
+}
+
 pub fn evaluate_range(
     expr: &Expr,
     storage: &impl QueryStore,
@@ -131,6 +211,14 @@ pub fn evaluate_range(
     if end_ms < start_ms {
         return Err(EvalError::InvalidRange { start: start_ms, end: end_ms });
     }
+    // Read each touched series ONCE over the whole query window and serve every
+    // step's sub-window from memory, instead of re-searching (and re-opening
+    // parts for) the same series at every step. The preload lower bound covers
+    // the largest `[range]` in the expression plus the instant-selector
+    // lookback.
+    let preload = max_selector_range(expr).max(EvalContext::DEFAULT_LOOKBACK_MS);
+    let cache = RangeCache::new(storage, start_ms.saturating_sub(preload), end_ms);
+    let storage = &cache;
     let mut by_series: BTreeMap<Vec<u8>, Vec<(i64, f64)>> = BTreeMap::new();
     let mut t = start_ms;
     while t <= end_ms {

@@ -115,6 +115,23 @@ running `matches_selector` on each — O(all series) per query.
 - **Next lever:** a full inverted **label** index (e.g. host) + per-series
   block-offset caching would speed the broad/data-bound aggregations.
 
+## Range-query step reuse (per-query read cache)  ✅ DONE (2026-05-29)
+**Was:** `evaluate_range` re-evaluated the expression at every step, so each
+series was re-searched (and its parts re-opened) once *per step* — ~72×
+redundant for a 3-day/1h `query_range`.
+- ✅ Added `RangeCache`, a per-query `QueryStore` wrapper: the first
+  `search_by_metric_name` for a series reads the whole `[start−maxlookback, end]`
+  window once and memoizes it; every step's sub-window is served from that
+  buffer. Metadata lookups delegate. Preload bound derived from the expression's
+  largest `[range]`.
+- **Result (scale-1000, 10k series, med @ 8 workers):** double-groupby-1
+  3514→**911 ms (3.9×)**; single-groupby-1-1-1 71→54 ms; single-groupby-5-1-1
+  388→278 ms. Correctness preserved (1000 host-groups; range tests green).
+- **Tradeoff:** a broad range query buffers its touched series in memory
+  (~3.6 GB peak for double-groupby-5 over 5k series). A per-query memory cap /
+  streaming evaluation is the next refinement; broad multi-metric aggregations
+  remain compute+data-bound.
+
 ## Final gate
 Re-run the full TSBS suite at scale=1000 and regenerate
 [`tsbs-comparison.md`](./tsbs-comparison.md) with after-numbers.
