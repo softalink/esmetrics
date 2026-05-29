@@ -171,3 +171,33 @@ samples each), plus the evaluator's per-series `ts[]`/`vals[]` re-extraction and
 ~1.9× block over-decode. Those are the next levers (SIMD/early-terminate decode,
 or reduce evaluator copies) — deeper, with diminishing returns now that the
 worst query is within ~2.4× of VM (was 7.3×).
+
+# Decode levers prototyped for the double-groupby ~2× gap (both rejected)
+
+Two "obvious" big levers for the remaining double-groupby gap were prototyped
+and **measured as not worth it** before committing to either. Microbenches:
+`crates/esm-compress/tests/decode_split.rs`, `crates/esm-storage/tests/read_path_split.rs`.
+
+**SIMD decode — rejected.** Isolated block decode already runs at **314M
+samples/s** (TSBS values are `ZstdNearestDelta`, ~0.45 bytes/sample; zstd
+decompress is 24% of decode, the SIMD-able delta/prefix-sum 76%). But the full
+read path delivers only ~40–52M samples/s, so **decode is ~23% of read time**
+and the SIMD-able part ~17% → a SIMD prefix-sum buys ~10% of read at best,
+~1–2% end-to-end.
+
+**mmap'd block read — rejected.** Read-path split attributed ~half of read time
+to "per-block file I/O + Vec alloc". A prototype that mmaps `timestamps.bin`/
+`values.bin` and decodes straight from the mapped slices (no `seek`+`read_exact`
++ scratch copy) saved **0.1 ns/sample (~0.5%)** vs the syscall path — with the
+part files warm in page cache, `read_exact` is already an effectively-free
+memcpy. The "file I/O" share was almost entirely the per-block `Vec`
+allocation, which `read_data_block_borrowed` (reusable decode buffers) already
+removed (~5%).
+
+**Conclusion:** the double-groupby ~2× is **not** attributable to decode speed
+or file I/O — both match VM on the shared byte-compatible format. It is the
+aggregate of many small per-sample costs (decode + `StoredSample` materialize +
+rollup) under 8-worker CPU saturation, where VM is marginally leaner per sample.
+No single high-ROI lever remains; closing it would need a broad per-sample
+rewrite of the read→reduce pipeline with uncertain payoff. Treated as the
+landing point.
