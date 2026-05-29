@@ -72,4 +72,17 @@ fn profile_ingest_phases() {
         100.0 * ingest.as_secs_f64() / total.as_secs_f64(),
         100.0 * flush.as_secs_f64() / total.as_secs_f64(),
     );
+
+    // Lever-1 isolation: a second ingest of the same keys hits every series in
+    // name_to_tsid (no insert, no index update) — the steady-state path of a
+    // real sustained load. Its cost is intern lookup (FNV over the full key +
+    // probe + memcmp) + pending push. Comparing warm-vs-cold shows how much is
+    // the first-seen interning vs the per-sample hash that a two-level intern
+    // would target.
+    let store2 = esm_storage::ShardedStorage::open(tmp.path().join("d2"), 16).unwrap();
+    store2.ingest_keyed(&arena, &entries).unwrap(); // warm the maps
+    let t = Instant::now();
+    store2.ingest_keyed(&arena, &entries).unwrap(); // all-hits steady state
+    let warm = t.elapsed();
+    eprintln!("buffer (warm, all-hits): {warm:?}  ({:.0} samples/s)", sps(warm));
 }

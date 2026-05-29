@@ -111,11 +111,19 @@ async fn main() -> Result<()> {
     let cli = parse_cli_with_vm_compat();
     init_tracing_with_level(&cli.logger_level);
 
-    // Shard count: one writer lane per core (capped) so concurrent ingest
-    // doesn't serialize on a single lock. Stable hash routes each series to a
-    // fixed shard.
+    // Shard count: ~2 writer lanes per core so concurrent ingest rarely
+    // collides on a shard lock (TSBS: 16→32 shards is +13% at 16 workers; >32
+    // over-shards — flush/merge overhead and buffer RAM outweigh contention
+    // relief). Stable hash routes each series to a fixed shard. `ESM_SHARDS`
+    // overrides for tuning to the actual client concurrency.
     let n_shards =
-        std::thread::available_parallelism().map_or(8, std::num::NonZeroUsize::get).min(16);
+        std::env::var("ESM_SHARDS").ok().and_then(|v| v.parse::<usize>().ok()).map_or_else(
+            || {
+                (std::thread::available_parallelism().map_or(8, std::num::NonZeroUsize::get) * 2)
+                    .min(32)
+            },
+            |n| n.max(1),
+        );
     let storage = ShardedStorage::open(&cli.storage_data_path, n_shards)
         .with_context(|| format!("open data dir {}", cli.storage_data_path.display()))?;
     tracing::info!(data_dir = %cli.storage_data_path.display(), shards = n_shards, "storage opened");

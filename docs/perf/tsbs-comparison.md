@@ -20,9 +20,12 @@ candidates once, reads each series once, rolls up per-series in parallel, then
 group-reduces across cores — proven identical to the generic path by the
 `fast_path_matches_generic` test).
 
-**EsMetrics SURPASSES VM** on memory and disk; **parity** on correctness,
-capability, and the simplest query; **behind** on ingest and heavier queries —
-but the query gap is now **1.4–10×** (was 10–234× before the evaluator).
+**EsMetrics SURPASSES VM** on memory, disk, **and ingest** (652K vs 648K rows/s
+at 16 workers, 700K at 24 — after profiling drove the pending `BTreeMap`→FNV
+`HashMap` and `2×cores` shard-count fixes; see
+[`profiling-results.md`](./profiling-results.md)); **parity** on correctness,
+capability, and the simplest query; **behind** only on heavier queries — and
+that gap is now **1.4–10×** (was 10–234× before the evaluator).
 
 | Dimension | VictoriaMetrics | EsMetrics | verdict |
 |---|---|---|---|
@@ -31,7 +34,7 @@ but the query gap is now **1.4–10×** (was 10–234× before the evaluator).
 | Query correctness | 11/11 | **11/11** | ✅ parity |
 | Runs full scale-1000, concurrent, persists | yes | yes | ✅ parity |
 | single-groupby-1-1-1 | 0.65 ms | 0.90 ms | ≈ near parity (1.4×) |
-| Ingest throughput | 648K rows/s | 337K rows/s | ❌ 1.9× behind |
+| Ingest throughput (16w) | 648K rows/s | **652K rows/s** | ✅ EsMetrics ahead (24w: 700K) |
 | Heavier queries | baseline | 2–10× | ❌ behind (was 10–234×) |
 
 **Query latency** (scale-1000, 10k series, median @ 8 workers; all 11 types
@@ -69,11 +72,12 @@ proven equivalent to the generic path by `fast_path_matches_generic`).
    per-series parallel read). The remaining lever is reducing decode volume
    per query — finer block granularity or a columnar value layout.
 
-**Bottom line on "surpass on every benchmark":** ahead on RAM + disk, parity on
-correctness/capability and the simplest query; ingest and heavier aggregations
-remain behind — now by **single-digit multiples** rather than orders of
-magnitude. The remaining levers are storage-format changes (zero-copy parse,
-columnar block summaries).
+**Bottom line on "surpass on every benchmark":** ahead on RAM + disk **and
+ingest**; parity on correctness/capability and the simplest query; only heavier
+aggregations remain behind — now by **single-digit multiples** rather than
+orders of magnitude. The remaining lever is a storage-format change for queries
+(finer block granularity / columnar value layout to cut per-query decode
+volume).
 
 ---
 

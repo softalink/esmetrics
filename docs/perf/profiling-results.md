@@ -70,7 +70,46 @@ Measured, validated against TSBS cpu-only (scale-1000, 25.92M rows):
 
 At 16 workers the gap to VM (648K rows/s) closed from ~1.5× to **~1.20×**. This
 was the first ingest change with a profiled cost model behind it — vs. the three
-prior allocation experiments, which were all flat. The remaining gap is the FNV
-intern (`get_or_create_tsid`) still in the 66% buffer slice plus the sub-linear
-per-shard `Mutex` contention; both are the next levers if more ingest headroom
-is wanted.
+prior allocation experiments, which were all flat.
+
+## Lever 2 — shard-lock contention (applied, the win that passed VM)
+
+The sub-linear worker scaling pointed at per-shard `Mutex` contention. Default
+shard count was `min(cores, 16)`. A shard-count sweep (`ESM_SHARDS` env knob,
+22-core box) at fixed workers:
+
+| shards | 8w     | 16w    | 24w    |
+|--------|--------|--------|--------|
+| 16     | —      | 570K   | —      |
+| 22     | 410K   | 605K   | —      |
+| **32** | **427K** | **646K** | **700K** |
+| 48     | —      | 587K   | —      |
+
+32 (~2× cores at this worker range) dominates everywhere; 48 over-shards —
+flush/merge overhead and buffer RAM outweigh contention relief. Default changed
+to `(2 × cores).min(32)`. Shipped default now ingests **652K rows/s at 16
+workers and 700K at 24 — surpassing VM's 648K.** Ingest is no longer a deficit.
+
+## Lever 1 — per-sample intern hash (evaluated, deferred)
+
+A warm-vs-cold buffer measurement (second ingest of the same keys = all-hits,
+the real sustained-load path) gives **2.12M samples/s warm vs 2.06M cold** —
+near-identical. So first-seen interning/indexing is *not* the cost; the buffer
+phase is dominated by per-sample work done on every sample: an FNV hash of the
+~250-byte series key (the `name_to_tsid` probe) **plus** a second FNV hash of
+the 32-byte `Tsid` (the pending probe) plus the push.
+
+Cutting it requires one of:
+- **two-level interning** (hash the shared ~200-byte tag suffix once per line,
+  short per-field key per sample) — invasive: changes the key scheme, parser,
+  index, and every query-side lookup;
+- **hash-keyed intern** (precompute the key hash in the parser, key by `u64`) —
+  trades a 64-bit collision margin for speed (VM uses 128-bit for this reason);
+- **merge the two maps** (`name → (tsid, pending_slot)`) to drop the second
+  per-sample hash — contained, but complicates flush/search-overlay.
+
+All are single-threaded wins of bounded size (~15–30% of the buffer phase) that
+sharding already masks — **ingest already beats VM**. Per the simplicity
+mandate and the history of neutral/regressive deep ingest changes, lever 1 is
+**deferred**: documented, understood, and not worth the architectural risk
+unless a future goal makes single-thread ingest the binding constraint again.
