@@ -127,6 +127,10 @@ pub struct StoredSample {
     pub value: i64,
 }
 
+/// One sample for the arena-keyed ingest path: `(key_byte_range, timestamp_ms,
+/// value)`, where the range indexes the caller's key arena.
+pub type KeyedEntry = (std::ops::Range<usize>, i64, i64);
+
 /// Cached metadata for one on-disk part. Lets queries prune parts by time
 /// range without a `read_dir` + part-header open per call.
 #[derive(Debug, Clone)]
@@ -558,6 +562,42 @@ impl Storage {
         for &i in indices {
             let s = &samples[i];
             self.buffer_one(&s.metric_name, s.timestamp_ms, s.value);
+        }
+        self.after_ingest(indices.len())
+    }
+
+    /// Ingest samples whose metric-name keys live as slices of `arena`
+    /// (`entry.0` is the key's byte range). Avoids a heap key per sample — keys
+    /// are interned by [`Self::get_or_create_tsid`], allocating only for new
+    /// series.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] if a triggered flush fails.
+    pub fn ingest_keyed(
+        &mut self,
+        arena: &[u8],
+        entries: &[KeyedEntry],
+    ) -> Result<(), StorageError> {
+        for (range, timestamp_ms, value) in entries {
+            self.buffer_one(&arena[range.clone()], *timestamp_ms, *value);
+        }
+        self.after_ingest(entries.len())
+    }
+
+    /// As [`Self::ingest_keyed`] but only for `entries[i]` where `i` in
+    /// `indices` (used by the sharded wrapper to route a batch).
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] if a triggered flush fails.
+    pub fn ingest_keyed_subset(
+        &mut self,
+        arena: &[u8],
+        entries: &[KeyedEntry],
+        indices: &[usize],
+    ) -> Result<(), StorageError> {
+        for &i in indices {
+            let (range, timestamp_ms, value) = &entries[i];
+            self.buffer_one(&arena[range.clone()], *timestamp_ms, *value);
         }
         self.after_ingest(indices.len())
     }

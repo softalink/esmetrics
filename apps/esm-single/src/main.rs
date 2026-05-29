@@ -369,19 +369,14 @@ async fn ingest_influx_v1(
 ) -> Result<StatusCode, AppError> {
     let ns_per_unit = ns_per_unit_for(&p.precision.unwrap_or_default(), 1);
     let now_ms = chrono_like_now_ms();
-    let parsed = esm_protocols::influx_line::parse(&body, now_ms, ns_per_unit)
+    // Arena-keyed parse: keys share one growable buffer (no Vec per sample);
+    // storage interns them, allocating only for new series.
+    let mut arena = Vec::with_capacity(body.len());
+    let mut entries = Vec::new();
+    esm_protocols::influx_line::parse_into(&body, now_ms, ns_per_unit, &mut arena, &mut entries)
         .map_err(|e| AppError(anyhow::anyhow!("influx parse: {e}")))?;
-    let samples: Vec<Sample> = parsed
-        .into_iter()
-        .map(|p| Sample {
-            metric_name: p.metric_name,
-            timestamp_ms: p.timestamp_ms,
-            value: p.value,
-        })
-        .collect();
-    let s = storage.as_ref();
-    s.ingest(&samples)?;
-    tracing::debug!(count = samples.len(), "influx v1 ingested");
+    storage.ingest_keyed(&arena, &entries)?;
+    tracing::debug!(count = entries.len(), "influx v1 ingested");
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -10,7 +10,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use crate::storage::{QueryStore, Sample, Storage, StorageError, StoredSample, TimeRange};
+use crate::storage::{
+    KeyedEntry, QueryStore, Sample, Storage, StorageError, StoredSample, TimeRange,
+};
 use crate::timeseries::Tsid;
 
 /// Multi-shard storage. Each shard is a self-contained [`Storage`]; a series
@@ -79,6 +81,27 @@ impl ShardedStorage {
         for (shard, indices) in buckets.into_iter().enumerate() {
             if !indices.is_empty() {
                 guard(&self.shards[shard]).ingest_selected(samples, &indices)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Ingest arena-keyed samples (see [`Storage::ingest_keyed`]), routing each
+    /// to its shard by the key bytes — no per-sample heap key.
+    ///
+    /// # Errors
+    /// Propagates the first shard ingest failure.
+    pub fn ingest_keyed(&self, arena: &[u8], entries: &[KeyedEntry]) -> Result<(), StorageError> {
+        if self.shards.len() == 1 {
+            return guard(&self.shards[0]).ingest_keyed(arena, entries);
+        }
+        let mut buckets: Vec<Vec<usize>> = (0..self.shards.len()).map(|_| Vec::new()).collect();
+        for (i, (range, _, _)) in entries.iter().enumerate() {
+            buckets[self.shard_idx(&arena[range.clone()])].push(i);
+        }
+        for (shard, indices) in buckets.into_iter().enumerate() {
+            if !indices.is_empty() {
+                guard(&self.shards[shard]).ingest_keyed_subset(arena, entries, &indices)?;
             }
         }
         Ok(())

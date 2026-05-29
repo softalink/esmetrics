@@ -16,4 +16,6 @@ pub mod storage;
 pub mod timeseries;
 
 pub use sharded::ShardedStorage;
-pub use storage::{QueryStore, Sample, Storage, StorageError, StoredSample, TimeRange};
+pub use storage::{
+    KeyedEntry, QueryStore, Sample, Storage, StorageError, StoredSample, TimeRange,
+};

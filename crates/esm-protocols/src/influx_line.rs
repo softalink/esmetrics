@@ -36,6 +36,38 @@ pub struct ParsedSample {
 /// timestamp represents — pass `1` for nanoseconds (v1 default), `1_000_000`
 /// for milliseconds, etc.
 ///
+/// One parsed sample as `(key_range, timestamp_ms, value)`, where `key_range`
+/// indexes the canonical metric-name bytes inside the caller's arena. Lets the
+/// ingest path avoid a heap `Vec` per sample (the keys share one growable
+/// arena; storage interns them by slice).
+pub type KeyedSample = (std::ops::Range<usize>, i64, i64);
+
+/// Streaming parse: append each sample's canonical metric-name bytes to `arena`
+/// and push `(range, timestamp_ms, value)` to `out`. No per-sample allocation
+/// (the arena and a small reused `scratch` buffer amortize), unlike [`parse`]
+/// which returns an owned `Vec<u8>` key per sample.
+///
+/// # Errors
+/// Returns [`ParseError`] on the first malformed line.
+pub fn parse_into(
+    input: &str,
+    now_ms: i64,
+    ns_per_unit: i64,
+    arena: &mut Vec<u8>,
+    out: &mut Vec<KeyedSample>,
+) -> Result<(), ParseError> {
+    let mut scratch = Vec::new();
+    for (line_no, raw) in input.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        parse_line_into(line, now_ms, ns_per_unit, arena, &mut scratch, out)
+            .map_err(|e| ParseError::Line { line_no, source: e })?;
+    }
+    Ok(())
+}
+
 /// # Errors
 /// Returns [`ParseError`] on the first malformed line.
 pub fn parse(input: &str, now_ms: i64, ns_per_unit: i64) -> Result<Vec<ParsedSample>, ParseError> {
@@ -139,6 +171,93 @@ fn parse_line(
         }
         metric_name.extend_from_slice(&suffix);
         out.push(ParsedSample { metric_name, timestamp_ms, value });
+    }
+    Ok(())
+}
+
+/// Arena-writing variant of [`parse_line`]. Produces byte-identical canonical
+/// keys (see `parse_into_matches_parse` test) but appends them to `arena`
+/// instead of allocating a `Vec` per sample. `scratch` is a reused buffer for
+/// the per-line label suffix.
+fn parse_line_into(
+    line: &str,
+    now_ms: i64,
+    ns_per_unit: i64,
+    arena: &mut Vec<u8>,
+    scratch: &mut Vec<u8>,
+    out: &mut Vec<KeyedSample>,
+) -> Result<(), LineError> {
+    let mut parts = split_top_level_spaces(line);
+    let key_section = parts.next().ok_or(LineError::MissingKey)?;
+    let fields_section = parts.next().ok_or(LineError::MissingFields)?;
+    let ts_section = parts.next();
+    if parts.next().is_some() {
+        return Err(LineError::TooManyTokens);
+    }
+
+    let mut comma_parts = split_unescaped(key_section, ',');
+    let measurement = comma_parts.next().ok_or(LineError::MissingMeasurement)?;
+    let mut tags: Vec<(Cow<'_, str>, Cow<'_, str>)> = Vec::new();
+    for tp in comma_parts {
+        let Some(eq) = find_unescaped(tp, '=') else { return Err(LineError::BadTag) };
+        tags.push((unescape_tag(&tp[..eq]), unescape_tag(&tp[eq + 1..])));
+    }
+    tags.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut field_parts = split_unescaped(fields_section, ',');
+    let mut field_pairs: Vec<(Cow<'_, str>, i64)> = Vec::new();
+    for fp in field_parts.by_ref() {
+        let Some(eq) = find_unescaped(fp, '=') else { return Err(LineError::BadField) };
+        field_pairs.push((unescape_tag(&fp[..eq]), parse_field_value(&fp[eq + 1..])?));
+    }
+    if field_pairs.is_empty() {
+        return Err(LineError::NoFields);
+    }
+
+    let timestamp_ms = match ts_section {
+        Some(s) => {
+            let ns: i64 = s.parse().map_err(|_| LineError::BadTimestamp(s.into()))?;
+            ns * ns_per_unit / 1_000_000
+        }
+        None => now_ms,
+    };
+
+    // Build the label suffix once per line into the reused scratch buffer.
+    scratch.clear();
+    if !tags.is_empty() {
+        scratch.push(b'{');
+        for (i, (k, v)) in tags.iter().enumerate() {
+            if i > 0 {
+                scratch.push(b',');
+            }
+            scratch.extend_from_slice(k.as_bytes());
+            scratch.extend_from_slice(b"=\"");
+            for c in v.chars() {
+                match c {
+                    '\\' => scratch.extend_from_slice(b"\\\\"),
+                    '"' => scratch.extend_from_slice(b"\\\""),
+                    '\n' => scratch.extend_from_slice(b"\\n"),
+                    other => {
+                        let mut buf = [0u8; 4];
+                        scratch.extend_from_slice(other.encode_utf8(&mut buf).as_bytes());
+                    }
+                }
+            }
+            scratch.push(b'"');
+        }
+        scratch.push(b'}');
+    }
+
+    for (field, value) in &field_pairs {
+        let with_field = field.as_ref() != "value";
+        let start = arena.len();
+        arena.extend_from_slice(measurement.as_bytes());
+        if with_field {
+            arena.push(b'_');
+            arena.extend_from_slice(field.as_bytes());
+        }
+        arena.extend_from_slice(scratch);
+        out.push((start..arena.len(), timestamp_ms, *value));
     }
     Ok(())
 }
@@ -290,6 +409,24 @@ pub enum LineError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_into_matches_parse() {
+        let input = "cpu,host=b,region=us usage_user=10i,usage_system=20i 1700000000000000000\n\
+                     cpu,host=a value=5 1700000000000000000\n\
+                     mem,host=a\\ x free=3i\n\
+                     disk read=1i,write=2i";
+        let normal = parse(input, 12345, 1).unwrap();
+        let mut arena = Vec::new();
+        let mut keyed = Vec::new();
+        parse_into(input, 12345, 1, &mut arena, &mut keyed).unwrap();
+        assert_eq!(normal.len(), keyed.len());
+        for (ns, (range, ts, v)) in normal.iter().zip(keyed.iter()) {
+            assert_eq!(&arena[range.clone()], ns.metric_name.as_slice(), "key mismatch");
+            assert_eq!(*ts, ns.timestamp_ms);
+            assert_eq!(*v, ns.value);
+        }
+    }
 
     #[test]
     fn parse_simple_line_no_tags() {
