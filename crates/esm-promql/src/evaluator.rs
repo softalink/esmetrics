@@ -2320,6 +2320,10 @@ fn candidate_series(storage: &impl QueryStore, sel: &VectorSelector) -> Vec<Vec<
         // No anchorable constraint: full scan.
         return storage.iter_metric_names().into_iter().map(|(n, _)| n).collect();
     }
+    if sets.len() == 1 {
+        // Single anchor: no intersection needed — skip the HashSet build.
+        return sets.pop().unwrap_or_default();
+    }
 
     // Intersect, starting from the smallest posting list.
     sets.sort_by_key(Vec::len);
