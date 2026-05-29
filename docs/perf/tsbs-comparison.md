@@ -35,12 +35,28 @@ that gap is now **1.4–10×** (was 10–234× before the evaluator).
 | Query correctness | 11/11 | **11/11** | ✅ parity |
 | Runs full scale-1000, concurrent, persists | yes | yes | ✅ parity |
 
-> **RAM note:** the `2×cores` shard default (16→32 shards) that put ingest ahead
-> of VM also raised peak RAM from 1.34 GB to ~2.1 GB — peak pending scales with
-> shard count (32 × the 1M-sample flush threshold). Measured: 16 shards =
-> 1.67 GB, 32 shards = 2.19 GB at end-of-load. Still ≈ VM's 2.19 GB, but the
-> 1.6× lead is gone. Mitigatable by scaling the per-shard flush threshold down
-> with shard count (bounds total pending) — not yet applied.
+> **RAM note (ingest↔RAM↔parts trilemma).** The `2×cores` shard default
+> (16→32 shards) that put ingest ahead of VM also raised peak RAM from 1.34 GB
+> to ~2.1 GB: at 32 shards each gets only ~810K samples, under the 1M flush
+> threshold, so pending holds ~all data until shutdown. Bounding it was
+> prototyped (scale the flush threshold down with shard count; defer the
+> per-flush merge; trigger compaction by part count) and **rejected as a Pareto
+> trade, not a clean win** — measured at 32 shards:
+>
+> | config | ingest | RAM | parts | dbl-grpby-all |
+> |---|---|---|---|---|
+> | 32M budget, merge-per-flush (current) | **672K ✅** | 2.1 GB (≈parity) | 93 | 1.37 s |
+> | 8M budget, merge-per-flush | 513K ❌ | 1.44 GB ✅ | 166 | — |
+> | 8M budget, **no** merge | **770K ✅** | **1.28 GB ✅** | 1015 | **3.0 s ❌** |
+> | 16M budget, compact-when-≥8-parts | 588K ❌ | 1.54 GB ✅ | 98 | 1.46 s |
+>
+> Synchronous compaction is itself the ingest cost (~85K rows/s): you can have
+> ingest-ahead **or** a RAM lead, not both — bounding RAM either drops ingest
+> below VM or (without compaction) explodes part count and wrecks queries. The
+> current default keeps ingest ahead and RAM at parity, the Pareto-best point
+> for "no deficit anywhere". A clean ingest-ahead **and** RAM-ahead result needs
+> **background (async) compaction** — the no-merge row (770K + 1.28 GB) is the
+> ceiling it would unlock if merging didn't block ingest. Tracked as future work.
 
 **Query latency** (scale-1000, 10k series, median @ 8 workers, 1000 queries
 each; all 11 types return series counts matching VM):
