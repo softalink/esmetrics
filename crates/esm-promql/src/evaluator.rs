@@ -151,6 +151,11 @@ struct RangeCache<'a, S: QueryStore> {
     series: std::cell::RefCell<std::collections::HashMap<Vec<u8>, Vec<StoredSample>>>,
     /// Total samples currently memoized; bounds per-query memory.
     cached_samples: std::cell::Cell<usize>,
+    /// Memoized query-invariant metadata so per-step candidate resolution does
+    /// not re-fan-out to every shard at each step.
+    metric_index: std::cell::RefCell<std::collections::HashMap<Vec<u8>, Vec<Vec<u8>>>>,
+    label_index: std::cell::RefCell<std::collections::HashMap<(Vec<u8>, Vec<u8>), Vec<Vec<u8>>>>,
+    distinct: std::cell::RefCell<Option<Vec<Vec<u8>>>>,
 }
 
 impl<'a, S: QueryStore> RangeCache<'a, S> {
@@ -166,18 +171,21 @@ impl<'a, S: QueryStore> RangeCache<'a, S> {
             hi,
             series: std::cell::RefCell::new(std::collections::HashMap::new()),
             cached_samples: std::cell::Cell::new(0),
+            metric_index: std::cell::RefCell::new(std::collections::HashMap::new()),
+            label_index: std::cell::RefCell::new(std::collections::HashMap::new()),
+            distinct: std::cell::RefCell::new(None),
         }
     }
 }
 
+/// Extract the `[min, max]` sub-window from a timestamp-sorted slice. Binary
+/// search bounds the work to O(log n + window) instead of scanning the whole
+/// cached series on every step — the dominant cost for many-step / wide-range
+/// queries (e.g. 720 steps over a 12 h window).
 fn filter_range(samples: &[StoredSample], range: TimeRange) -> Vec<StoredSample> {
-    samples
-        .iter()
-        .copied()
-        .filter(|s| {
-            s.timestamp_ms >= range.min_timestamp_ms && s.timestamp_ms <= range.max_timestamp_ms
-        })
-        .collect()
+    let lo = samples.partition_point(|s| s.timestamp_ms < range.min_timestamp_ms);
+    let hi = samples.partition_point(|s| s.timestamp_ms <= range.max_timestamp_ms);
+    samples[lo..hi].to_vec()
 }
 
 impl<S: QueryStore> QueryStore for RangeCache<'_, S> {
@@ -214,15 +222,31 @@ impl<S: QueryStore> QueryStore for RangeCache<'_, S> {
     }
 
     fn series_for_metric_name(&self, name_part: &[u8]) -> Vec<Vec<u8>> {
-        self.inner.series_for_metric_name(name_part)
+        if let Some(v) = self.metric_index.borrow().get(name_part) {
+            return v.clone();
+        }
+        let v = self.inner.series_for_metric_name(name_part);
+        self.metric_index.borrow_mut().insert(name_part.to_vec(), v.clone());
+        v
     }
 
     fn series_for_label(&self, label_name: &[u8], label_value: &[u8]) -> Vec<Vec<u8>> {
-        self.inner.series_for_label(label_name, label_value)
+        let key = (label_name.to_vec(), label_value.to_vec());
+        if let Some(v) = self.label_index.borrow().get(&key) {
+            return v.clone();
+        }
+        let v = self.inner.series_for_label(label_name, label_value);
+        self.label_index.borrow_mut().insert(key, v.clone());
+        v
     }
 
     fn distinct_metric_names(&self) -> Vec<Vec<u8>> {
-        self.inner.distinct_metric_names()
+        if let Some(v) = self.distinct.borrow().as_ref() {
+            return v.clone();
+        }
+        let v = self.inner.distinct_metric_names();
+        *self.distinct.borrow_mut() = Some(v.clone());
+        v
     }
 }
 
