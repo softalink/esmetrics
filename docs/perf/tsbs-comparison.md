@@ -29,30 +29,35 @@ that gap is now **1.4–10×** (was 10–234× before the evaluator).
 
 | Dimension | VictoriaMetrics | EsMetrics | verdict |
 |---|---|---|---|
-| Ingest peak RAM | 2.19 GB | **1.34 GB** | ✅ EsMetrics ahead (1.6×) |
+| Ingest throughput (16w) | 648K rows/s | **672K rows/s** | ✅ EsMetrics ahead |
+| Ingest peak RAM | 2.19 GB | ~2.1–2.2 GB | ≈ parity (regressed from 1.34 GB — see note) |
 | On-disk size | 118 MB | **86 MB** | ✅ EsMetrics ahead |
 | Query correctness | 11/11 | **11/11** | ✅ parity |
 | Runs full scale-1000, concurrent, persists | yes | yes | ✅ parity |
-| single-groupby-1-1-1 | 0.65 ms | 0.90 ms | ≈ near parity (1.4×) |
-| Ingest throughput (16w) | 648K rows/s | **652K rows/s** | ✅ EsMetrics ahead (24w: 700K) |
-| Heavier queries | baseline | 2–10× | ❌ behind (was 10–234×) |
 
-**Query latency** (scale-1000, 10k series, median @ 8 workers; all 11 types
-return series counts matching VM):
+> **RAM note:** the `2×cores` shard default (16→32 shards) that put ingest ahead
+> of VM also raised peak RAM from 1.34 GB to ~2.1 GB — peak pending scales with
+> shard count (32 × the 1M-sample flush threshold). Measured: 16 shards =
+> 1.67 GB, 32 shards = 2.19 GB at end-of-load. Still ≈ VM's 2.19 GB, but the
+> 1.6× lead is gone. Mitigatable by scaling the per-shard flush threshold down
+> with shard count (bounds total pending) — not yet applied.
+
+**Query latency** (scale-1000, 10k series, median @ 8 workers, 1000 queries
+each; all 11 types return series counts matching VM):
 
 | query type | VM | EsMetrics | ratio | (before query-perf work) |
 |---|---|---|---|---|
-| single-groupby-1-1-1 | 0.65 ms | **0.61 ms** | **0.94× ✅** | (0.90 ms, 1.4×) |
-| single-groupby-1-1-12 | 0.99 ms | **0.90 ms** | **0.91× ✅** | (2.15 ms, 2.2×) |
-| single-groupby-5-1-12 | 2.31 ms | **2.29 ms** | **0.99× ✅** | (7.58 ms, 3.3×) |
-| single-groupby-5-1-1 | 0.99 ms | 1.12 ms | 1.13× | (3.19 ms, 3.2×) |
-| cpu-max-all-1 | 1.56 ms | 2.12 ms | 1.36× | (7.92 ms, 5.1×) |
-| single-groupby-1-8-1 | 0.99 ms | 1.90 ms | 1.92× | (3.17 ms, 3.2×) |
-| cpu-max-all-8 | 5.04 ms | 10.6 ms | 2.11× | (44 ms, 8.7×) |
-| double-groupby-all | 701 ms | 1.48 s | 2.11× | (5.13 s, 7.3×) |
-| double-groupby-1 | 63 ms | 148 ms | 2.35× | (656 ms, 10×) |
-| double-groupby-5 | 329 ms | 782 ms | 2.38× | (2.69 s, 8.2×) |
-| single-groupby-5-8-1 | 1.81 ms | 4.84 ms | 2.67× | (13.1 ms, 7.2×) |
+| single-groupby-1-1-1 | 0.65 ms | **0.56 ms** | **0.86× ✅** | (0.90 ms, 1.4×) |
+| single-groupby-1-1-12 | 0.99 ms | **0.86 ms** | **0.87× ✅** | (2.15 ms, 2.2×) |
+| single-groupby-5-1-12 | 2.31 ms | **2.35 ms** | **1.02× ✅** | (7.58 ms, 3.3×) |
+| single-groupby-5-1-1 | 0.99 ms | 1.20 ms | 1.21× | (3.19 ms, 3.2×) |
+| cpu-max-all-1 | 1.56 ms | 2.08 ms | 1.33× | (7.92 ms, 5.1×) |
+| single-groupby-1-8-1 | 0.99 ms | 1.88 ms | 1.90× | (3.17 ms, 3.2×) |
+| double-groupby-all | 701 ms | 1.37 s | 1.95× | (5.13 s, 7.3×) |
+| cpu-max-all-8 | 5.04 ms | 9.83 ms | 1.95× | (44 ms, 8.7×) |
+| double-groupby-5 | 329 ms | 669 ms | 2.03× | (2.69 s, 8.2×) |
+| double-groupby-1 | 63 ms | 134 ms | 2.13× | (656 ms, 10×) |
+| single-groupby-5-8-1 | 1.81 ms | 4.79 ms | 2.65× | (13.1 ms, 7.2×) |
 
 **Read of the results:** EsMetrics is now **ahead of VM on RAM (1.6×), disk, and
 ingest**, **faster than VM on 3 query types and at parity on a 4th**, and within
