@@ -31,7 +31,7 @@ use axum::{
 use clap::Parser;
 use esm_storage::{Sample, Storage, TimeRange};
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -115,7 +115,7 @@ async fn main() -> Result<()> {
     let storage = Storage::open(&cli.storage_data_path)
         .with_context(|| format!("open data dir {}", cli.storage_data_path.display()))?;
     tracing::info!(data_dir = %cli.storage_data_path.display(), "storage opened");
-    let storage = Arc::new(Mutex::new(storage));
+    let storage = Arc::new(RwLock::new(storage));
 
     let mut app = Router::new()
         .route("/api/v1/import/prometheus", post(ingest_prometheus))
@@ -133,6 +133,7 @@ async fn main() -> Result<()> {
         .route("/api/v1/otlp/v1/metrics", post(ingest_otlp))
         .route("/api/v1/import/native", post(ingest_native_vm))
         .route("/api/v1/query", get(query_dispatch))
+        .route("/api/v1/query_range", get(promql_range))
         .route("/api/v1/promql", get(promql_instant))
         .route("/api/v1/promql_range", get(promql_range))
         .route("/api/v1/series", get(series_endpoint))
@@ -226,7 +227,7 @@ async fn main() -> Result<()> {
         let _ = h.await;
     }
     tracing::info!("HTTP listener stopped; draining in-memory state");
-    let mut s = storage.lock().await;
+    let mut s = storage.write().await;
     s.flush().context("flush on shutdown")?;
     drop(s);
     tracing::info!("shutdown complete");
@@ -325,10 +326,10 @@ async fn health() -> &'static str {
 }
 
 /// `GET /metrics` — Prometheus text exposition of self-metrics.
-async fn self_metrics(State(storage): State<Arc<Mutex<Storage>>>) -> impl IntoResponse {
+async fn self_metrics(State(storage): State<Arc<RwLock<Storage>>>) -> impl IntoResponse {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let serves = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-    let s = storage.lock().await;
+    let s = storage.read().await;
     let metric_count = s.metric_count();
     let data_dir_display = s.data_dir().display().to_string();
     drop(s);
@@ -360,7 +361,7 @@ struct InfluxParams {
 }
 
 async fn ingest_influx_v1(
-    State(storage): State<Arc<Mutex<Storage>>>,
+    State(storage): State<Arc<RwLock<Storage>>>,
     Query(p): Query<InfluxParams>,
     body: String,
 ) -> Result<StatusCode, AppError> {
@@ -376,14 +377,14 @@ async fn ingest_influx_v1(
             value: p.value,
         })
         .collect();
-    let mut s = storage.lock().await;
+    let mut s = storage.write().await;
     s.ingest(&samples)?;
     tracing::debug!(count = samples.len(), "influx v1 ingested");
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn ingest_influx_v2(
-    state: State<Arc<Mutex<Storage>>>,
+    state: State<Arc<RwLock<Storage>>>,
     p: Query<InfluxParams>,
     body: String,
 ) -> Result<StatusCode, AppError> {
@@ -394,11 +395,11 @@ async fn ingest_influx_v2(
 /// `GET /api/v1/series?match[]=expr` — returns the label sets of matching
 /// series. Multiple `match[]` params are unioned.
 async fn series_endpoint(
-    State(storage): State<Arc<Mutex<Storage>>>,
+    State(storage): State<Arc<RwLock<Storage>>>,
     raw_query: Option<axum::extract::RawQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let matchers = parse_matchers_from_query(raw_query.and_then(|q| q.0));
-    let s = storage.lock().await;
+    let s = storage.read().await;
     let mut out: Vec<serde_json::Value> = Vec::new();
     let mut seen: std::collections::BTreeSet<Vec<u8>> = std::collections::BTreeSet::new();
     for (name, _tsid) in s.iter_metric_names() {
@@ -421,11 +422,11 @@ async fn series_endpoint(
 /// `GET /api/v1/labels[?match[]=expr]` — list every label name known across
 /// all matched series.
 async fn labels_endpoint(
-    State(storage): State<Arc<Mutex<Storage>>>,
+    State(storage): State<Arc<RwLock<Storage>>>,
     raw_query: Option<axum::extract::RawQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let matchers = parse_matchers_from_query(raw_query.and_then(|q| q.0));
-    let s = storage.lock().await;
+    let s = storage.read().await;
     let mut labels: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for (name, _tsid) in s.iter_metric_names() {
         let matches = if matchers.is_empty() {
@@ -446,12 +447,12 @@ async fn labels_endpoint(
 
 /// `GET /api/v1/label/<name>/values[?match[]=expr]`.
 async fn label_values_endpoint(
-    State(storage): State<Arc<Mutex<Storage>>>,
+    State(storage): State<Arc<RwLock<Storage>>>,
     axum::extract::Path(name): axum::extract::Path<String>,
     raw_query: Option<axum::extract::RawQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let matchers = parse_matchers_from_query(raw_query.and_then(|q| q.0));
-    let s = storage.lock().await;
+    let s = storage.read().await;
     let mut values: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for (metric_name, _tsid) in s.iter_metric_names() {
         let matches = if matchers.is_empty() {
@@ -577,7 +578,7 @@ fn decode_metric_labels_json(metric_name: &[u8]) -> serde_json::Value {
 }
 
 async fn ingest_json(
-    State(storage): State<Arc<Mutex<Storage>>>,
+    State(storage): State<Arc<RwLock<Storage>>>,
     body: String,
 ) -> Result<StatusCode, AppError> {
     let parsed = esm_protocols::json_line::parse(&body)
@@ -590,13 +591,13 @@ async fn ingest_json(
             value: p.value,
         })
         .collect();
-    let mut s = storage.lock().await;
+    let mut s = storage.write().await;
     s.ingest(&samples)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn ingest_opentsdb_telnet(
-    State(storage): State<Arc<Mutex<Storage>>>,
+    State(storage): State<Arc<RwLock<Storage>>>,
     body: String,
 ) -> Result<StatusCode, AppError> {
     let parsed = esm_protocols::opentsdb::parse_telnet(&body)
@@ -609,13 +610,13 @@ async fn ingest_opentsdb_telnet(
             value: p.value,
         })
         .collect();
-    let mut s = storage.lock().await;
+    let mut s = storage.write().await;
     s.ingest(&samples)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn ingest_opentsdb_http(
-    State(storage): State<Arc<Mutex<Storage>>>,
+    State(storage): State<Arc<RwLock<Storage>>>,
     body: String,
 ) -> Result<StatusCode, AppError> {
     let parsed = esm_protocols::opentsdb::parse_http_json(&body)
@@ -628,13 +629,13 @@ async fn ingest_opentsdb_http(
             value: p.value,
         })
         .collect();
-    let mut s = storage.lock().await;
+    let mut s = storage.write().await;
     s.ingest(&samples)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn ingest_datadog(
-    State(storage): State<Arc<Mutex<Storage>>>,
+    State(storage): State<Arc<RwLock<Storage>>>,
     body: String,
 ) -> Result<StatusCode, AppError> {
     let parsed = esm_protocols::datadog::parse(&body)
@@ -647,7 +648,7 @@ async fn ingest_datadog(
             value: p.value,
         })
         .collect();
-    let mut s = storage.lock().await;
+    let mut s = storage.write().await;
     s.ingest(&samples)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -701,8 +702,8 @@ async fn status_flags() -> impl IntoResponse {
     }))
 }
 
-async fn status_tsdb(State(storage): State<Arc<Mutex<Storage>>>) -> impl IntoResponse {
-    let s = storage.lock().await;
+async fn status_tsdb(State(storage): State<Arc<RwLock<Storage>>>) -> impl IntoResponse {
+    let s = storage.read().await;
     let count = s.metric_count();
     drop(s);
     axum::Json(serde_json::json!({
@@ -726,10 +727,10 @@ async fn status_targets() -> impl IntoResponse {
 }
 
 async fn snapshot_create(
-    State(storage): State<Arc<Mutex<Storage>>>,
+    State(storage): State<Arc<RwLock<Storage>>>,
 ) -> Result<axum::Json<serde_json::Value>, AppError> {
     let name = format!("snapshot-{}", chrono_like_now_ms());
-    let mut s = storage.lock().await;
+    let mut s = storage.write().await;
     let path = s.create_snapshot(&name).map_err(|e| AppError(anyhow::anyhow!("snapshot: {e}")))?;
     Ok(axum::Json(serde_json::json!({
         "status": "ok",
@@ -739,23 +740,23 @@ async fn snapshot_create(
 }
 
 async fn snapshot_list(
-    State(storage): State<Arc<Mutex<Storage>>>,
+    State(storage): State<Arc<RwLock<Storage>>>,
 ) -> Result<axum::Json<serde_json::Value>, AppError> {
-    let s = storage.lock().await;
+    let s = storage.read().await;
     let list = s.list_snapshots().map_err(|e| AppError(anyhow::anyhow!("snapshot list: {e}")))?;
     Ok(axum::Json(serde_json::json!({ "status": "ok", "snapshots": list })))
 }
 
 async fn snapshot_delete(
-    State(storage): State<Arc<Mutex<Storage>>>,
+    State(storage): State<Arc<RwLock<Storage>>>,
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Result<StatusCode, AppError> {
-    let s = storage.lock().await;
+    let s = storage.read().await;
     s.delete_snapshot(&name).map_err(|e| AppError(anyhow::anyhow!("snapshot delete: {e}")))?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn run_snapshot_retention_sweeper(storage: Arc<Mutex<Storage>>, period_secs: u64) {
+async fn run_snapshot_retention_sweeper(storage: Arc<RwLock<Storage>>, period_secs: u64) {
     let sweep_period = std::cmp::min(period_secs / 12, 3600).max(60);
     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(sweep_period));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -764,7 +765,7 @@ async fn run_snapshot_retention_sweeper(storage: Arc<Mutex<Storage>>, period_sec
         let now_ms = chrono_like_now_ms();
         let cutoff_ms =
             now_ms - i64::try_from(period_secs.saturating_mul(1000)).unwrap_or(i64::MAX);
-        let s = storage.lock().await;
+        let s = storage.read().await;
         match s.enforce_snapshot_retention(cutoff_ms) {
             Ok(0) => tracing::debug!(cutoff_ms, "snapshot retention: nothing dropped"),
             Ok(n) => tracing::info!(cutoff_ms, snapshots_dropped = n, "snapshot retention"),
@@ -773,7 +774,7 @@ async fn run_snapshot_retention_sweeper(storage: Arc<Mutex<Storage>>, period_sec
     }
 }
 
-async fn run_retention_sweeper(storage: Arc<Mutex<Storage>>, period_secs: u64) {
+async fn run_retention_sweeper(storage: Arc<RwLock<Storage>>, period_secs: u64) {
     // Sweep once per hour, or sooner if the retention window is short.
     let sweep_period = std::cmp::min(period_secs.saturating_mul(1000) / 24, 3600).max(60);
     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(sweep_period));
@@ -783,7 +784,7 @@ async fn run_retention_sweeper(storage: Arc<Mutex<Storage>>, period_secs: u64) {
         let now_ms = chrono_like_now_ms();
         let cutoff_ms =
             now_ms - i64::try_from(period_secs.saturating_mul(1000)).unwrap_or(i64::MAX);
-        let mut s = storage.lock().await;
+        let mut s = storage.write().await;
         match s.enforce_retention(cutoff_ms) {
             Ok(0) => tracing::debug!(cutoff_ms, "retention sweep: nothing dropped"),
             Ok(n) => tracing::info!(cutoff_ms, parts_dropped = n, "retention sweep"),
@@ -793,7 +794,7 @@ async fn run_retention_sweeper(storage: Arc<Mutex<Storage>>, period_secs: u64) {
 }
 
 async fn ingest_csv(
-    State(storage): State<Arc<Mutex<Storage>>>,
+    State(storage): State<Arc<RwLock<Storage>>>,
     body: String,
 ) -> Result<StatusCode, AppError> {
     let parsed = esm_protocols::csv_import::parse(&body)
@@ -806,13 +807,13 @@ async fn ingest_csv(
             value: p.value,
         })
         .collect();
-    let mut s = storage.lock().await;
+    let mut s = storage.write().await;
     s.ingest(&samples)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn ingest_native_vm(
-    State(storage): State<Arc<Mutex<Storage>>>,
+    State(storage): State<Arc<RwLock<Storage>>>,
     body: axum::body::Bytes,
 ) -> Result<StatusCode, AppError> {
     let parsed = esm_protocols::native_vm::parse(&body)
@@ -825,13 +826,13 @@ async fn ingest_native_vm(
             value: p.value,
         })
         .collect();
-    let mut s = storage.lock().await;
+    let mut s = storage.write().await;
     s.ingest(&samples)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn ingest_otlp(
-    State(storage): State<Arc<Mutex<Storage>>>,
+    State(storage): State<Arc<RwLock<Storage>>>,
     body: axum::body::Bytes,
 ) -> Result<StatusCode, AppError> {
     let parsed = esm_protocols::otlp::parse(&body)
@@ -844,13 +845,13 @@ async fn ingest_otlp(
             value: p.value,
         })
         .collect();
-    let mut s = storage.lock().await;
+    let mut s = storage.write().await;
     s.ingest(&samples)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn ingest_newrelic(
-    State(storage): State<Arc<Mutex<Storage>>>,
+    State(storage): State<Arc<RwLock<Storage>>>,
     body: axum::body::Bytes,
 ) -> Result<StatusCode, AppError> {
     let parsed = esm_protocols::newrelic::parse(&body)
@@ -863,13 +864,13 @@ async fn ingest_newrelic(
             value: p.value,
         })
         .collect();
-    let mut s = storage.lock().await;
+    let mut s = storage.write().await;
     s.ingest(&samples)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn ingest_graphite(
-    State(storage): State<Arc<Mutex<Storage>>>,
+    State(storage): State<Arc<RwLock<Storage>>>,
     body: String,
 ) -> Result<StatusCode, AppError> {
     let now_ms = chrono_like_now_ms();
@@ -883,7 +884,7 @@ async fn ingest_graphite(
             value: p.value,
         })
         .collect();
-    let mut s = storage.lock().await;
+    let mut s = storage.write().await;
     s.ingest(&samples)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -903,7 +904,7 @@ fn ns_per_unit_for(precision: &str, default: i64) -> i64 {
 /// Body: snappy-compressed protobuf `prometheus.WriteRequest`. This is the
 /// standard endpoint Prometheus servers (and vmagent) use.
 async fn ingest_prom_remote_write(
-    State(storage): State<Arc<Mutex<Storage>>>,
+    State(storage): State<Arc<RwLock<Storage>>>,
     body: bytes::Bytes,
 ) -> Result<StatusCode, AppError> {
     let parsed = esm_protocols::prom_remote_write::parse_snappy(&body)
@@ -921,7 +922,7 @@ async fn ingest_prom_remote_write(
             });
         }
     }
-    let mut s = storage.lock().await;
+    let mut s = storage.write().await;
     s.ingest(&samples)?;
     tracing::debug!(count = samples.len(), "prom remote-write ingested");
     Ok(StatusCode::NO_CONTENT)
@@ -931,7 +932,7 @@ async fn ingest_prom_remote_write(
 ///
 /// Body: Prometheus text-exposition document.
 async fn ingest_prometheus(
-    State(storage): State<Arc<Mutex<Storage>>>,
+    State(storage): State<Arc<RwLock<Storage>>>,
     body: String,
 ) -> Result<StatusCode, AppError> {
     let now_ms = chrono_like_now_ms();
@@ -944,7 +945,7 @@ async fn ingest_prometheus(
             value: p.value,
         })
         .collect();
-    let mut s = storage.lock().await;
+    let mut s = storage.write().await;
     s.ingest(&samples)?;
     tracing::debug!(count = samples.len(), "ingested");
     Ok(StatusCode::NO_CONTENT)
@@ -992,7 +993,7 @@ struct PromqlParams {
 /// `{"status":"success","data":{"resultType":"vector|scalar","result":...}}`
 /// envelope.
 async fn promql_instant(
-    State(storage): State<Arc<Mutex<Storage>>>,
+    State(storage): State<Arc<RwLock<Storage>>>,
     Query(params): Query<PromqlParams>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let expr = esm_promql::parser::parse(&params.query)
@@ -1003,10 +1004,12 @@ async fn promql_instant(
         ms / 1000.0
     });
     let ctx = esm_promql::EvalContext::instant(seconds_to_ms(now_sec));
-    let mut s = storage.lock().await;
+    // Read-only queries take a shared read lock so they run concurrently; only
+    // the optional explicit flush needs the exclusive write lock.
     if params.flush {
-        s.flush()?;
+        storage.write().await.flush()?;
     }
+    let s = storage.read().await;
     let value = esm_promql::evaluator::evaluate(&expr, &s, ctx)
         .map_err(|e| AppError(anyhow::anyhow!("eval error: {e}")))?;
     drop(s);
@@ -1033,7 +1036,7 @@ struct PromqlRangeParams {
 /// Prometheus-compatible range query. Returns
 /// `{"status":"success","data":{"resultType":"matrix","result":[…]}}`.
 async fn promql_range(
-    State(storage): State<Arc<Mutex<Storage>>>,
+    State(storage): State<Arc<RwLock<Storage>>>,
     Query(params): Query<PromqlRangeParams>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let expr = esm_promql::parser::parse(&params.query)
@@ -1044,10 +1047,12 @@ async fn promql_range(
     if step_ms <= 0 {
         return Err(AppError(anyhow::anyhow!("step must be > 0")));
     }
-    let mut s = storage.lock().await;
+    // Read-only queries take a shared read lock so they run concurrently; only
+    // the optional explicit flush needs the exclusive write lock.
     if params.flush {
-        s.flush()?;
+        storage.write().await.flush()?;
     }
+    let s = storage.read().await;
     let elements = esm_promql::evaluator::evaluate_range(&expr, &s, start_ms, end_ms, step_ms)
         .map_err(|e| AppError(anyhow::anyhow!("eval error: {e}")))?;
     drop(s);
@@ -1163,7 +1168,7 @@ fn decode_metric_labels(metric_name: &[u8]) -> std::collections::BTreeMap<String
 /// Prometheus + Grafana clients hit the canonical Prom path while
 /// keeping the small-footprint metric lookup available.
 async fn query_dispatch(
-    State(storage): State<Arc<Mutex<Storage>>>,
+    State(storage): State<Arc<RwLock<Storage>>>,
     raw_query: axum::extract::RawQuery,
 ) -> axum::response::Response {
     let raw = raw_query.0.unwrap_or_default();
@@ -1222,14 +1227,14 @@ async fn query_dispatch(
 }
 
 async fn query_metric_inner(
-    storage: Arc<Mutex<Storage>>,
+    storage: Arc<RwLock<Storage>>,
     params: QueryParams,
 ) -> Result<Json<QueryResponse>, AppError> {
     let range = TimeRange {
         min_timestamp_ms: params.start.unwrap_or(i64::MIN),
         max_timestamp_ms: params.end.unwrap_or(i64::MAX),
     };
-    let mut s = storage.lock().await;
+    let mut s = storage.write().await;
     if params.flush {
         s.flush()?;
     }
