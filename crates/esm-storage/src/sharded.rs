@@ -8,7 +8,7 @@
 //! this through the [`QueryStore`] trait, agnostic to partitioning.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::storage::{
     KeyedEntry, QueryStore, Sample, Storage, StorageError, StoredSample, TimeRange,
@@ -16,18 +16,26 @@ use crate::storage::{
 use crate::timeseries::Tsid;
 
 /// Multi-shard storage. Each shard is a self-contained [`Storage`]; a series
-/// always lands in (and is read from) the same shard.
+/// always lands in (and is read from) the same shard. The per-shard lock is an
+/// `RwLock` so concurrent queries (all `&self` reads) share a shard instead of
+/// serializing — only ingest/flush/retention (`&mut self`) take it exclusively.
 #[allow(missing_debug_implementations)]
 pub struct ShardedStorage {
     data_dir: PathBuf,
-    shards: Vec<Mutex<Storage>>,
+    shards: Vec<RwLock<Storage>>,
 }
 
-/// Lock a shard, recovering the guard on poison instead of panicking. A
+/// Shared read lock on a shard, recovering on poison instead of panicking. A
 /// poisoned shard means a prior panic mid-write; the structures stay usable
 /// for best-effort continuation.
-fn guard(m: &Mutex<Storage>) -> MutexGuard<'_, Storage> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
+fn read_guard(m: &RwLock<Storage>) -> RwLockReadGuard<'_, Storage> {
+    m.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Exclusive write lock on a shard (ingest / flush / retention / snapshot
+/// creation), recovering on poison. See [`read_guard`].
+fn write_guard(m: &RwLock<Storage>) -> RwLockWriteGuard<'_, Storage> {
+    m.write().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl ShardedStorage {
@@ -40,7 +48,7 @@ impl ShardedStorage {
         let n = n_shards.max(1);
         let mut shards = Vec::with_capacity(n);
         for i in 0..n {
-            shards.push(Mutex::new(Storage::open(data_dir.join(format!("shard-{i:02}")))?));
+            shards.push(RwLock::new(Storage::open(data_dir.join(format!("shard-{i:02}")))?));
         }
         Ok(Self { data_dir, shards })
     }
@@ -70,7 +78,7 @@ impl ShardedStorage {
     /// Propagates the first shard ingest failure.
     pub fn ingest(&self, samples: &[Sample]) -> Result<(), StorageError> {
         if self.shards.len() == 1 {
-            return guard(&self.shards[0]).ingest(samples);
+            return write_guard(&self.shards[0]).ingest(samples);
         }
         // Route by index — no `Sample` clone. Each shard ingests its subset
         // directly from the original slice.
@@ -80,7 +88,7 @@ impl ShardedStorage {
         }
         for (shard, indices) in buckets.into_iter().enumerate() {
             if !indices.is_empty() {
-                guard(&self.shards[shard]).ingest_selected(samples, &indices)?;
+                write_guard(&self.shards[shard]).ingest_selected(samples, &indices)?;
             }
         }
         Ok(())
@@ -93,7 +101,7 @@ impl ShardedStorage {
     /// Propagates the first shard ingest failure.
     pub fn ingest_keyed(&self, arena: &[u8], entries: &[KeyedEntry]) -> Result<(), StorageError> {
         if self.shards.len() == 1 {
-            return guard(&self.shards[0]).ingest_keyed(arena, entries);
+            return write_guard(&self.shards[0]).ingest_keyed(arena, entries);
         }
         let mut buckets: Vec<Vec<usize>> = (0..self.shards.len()).map(|_| Vec::new()).collect();
         for (i, (range, _, _)) in entries.iter().enumerate() {
@@ -101,7 +109,7 @@ impl ShardedStorage {
         }
         for (shard, indices) in buckets.into_iter().enumerate() {
             if !indices.is_empty() {
-                guard(&self.shards[shard]).ingest_keyed_subset(arena, entries, &indices)?;
+                write_guard(&self.shards[shard]).ingest_keyed_subset(arena, entries, &indices)?;
             }
         }
         Ok(())
@@ -113,7 +121,7 @@ impl ShardedStorage {
     /// Propagates the first shard flush failure.
     pub fn flush(&self) -> Result<(), StorageError> {
         for sh in &self.shards {
-            guard(sh).flush()?;
+            write_guard(sh).flush()?;
         }
         Ok(())
     }
@@ -132,7 +140,7 @@ impl ShardedStorage {
     /// Total distinct series across all shards.
     #[must_use]
     pub fn metric_count(&self) -> usize {
-        self.shards.iter().map(|sh| guard(sh).metric_count()).sum()
+        self.shards.iter().map(|sh| read_guard(sh).metric_count()).sum()
     }
 
     /// Base data directory.
@@ -148,7 +156,7 @@ impl ShardedStorage {
     pub fn enforce_retention(&self, cutoff_ms: i64) -> Result<usize, StorageError> {
         let mut removed = 0;
         for sh in &self.shards {
-            removed += guard(sh).enforce_retention(cutoff_ms)?;
+            removed += write_guard(sh).enforce_retention(cutoff_ms)?;
         }
         Ok(removed)
     }
@@ -160,7 +168,7 @@ impl ShardedStorage {
     pub fn enforce_snapshot_retention(&self, cutoff_ms: i64) -> Result<usize, StorageError> {
         let mut removed = 0;
         for sh in &self.shards {
-            removed += guard(sh).enforce_snapshot_retention(cutoff_ms)?;
+            removed += read_guard(sh).enforce_snapshot_retention(cutoff_ms)?;
         }
         Ok(removed)
     }
@@ -172,7 +180,7 @@ impl ShardedStorage {
     /// Propagates the first shard failure.
     pub fn create_snapshot(&self, name: &str) -> Result<PathBuf, StorageError> {
         for sh in &self.shards {
-            guard(sh).create_snapshot(name)?;
+            write_guard(sh).create_snapshot(name)?;
         }
         Ok(self.data_dir.clone())
     }
@@ -183,7 +191,7 @@ impl ShardedStorage {
     /// Propagates the first shard failure.
     pub fn delete_snapshot(&self, name: &str) -> Result<(), StorageError> {
         for sh in &self.shards {
-            guard(sh).delete_snapshot(name)?;
+            read_guard(sh).delete_snapshot(name)?;
         }
         Ok(())
     }
@@ -195,7 +203,7 @@ impl ShardedStorage {
     pub fn list_snapshots(&self) -> Result<Vec<String>, StorageError> {
         let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for sh in &self.shards {
-            set.extend(guard(sh).list_snapshots()?);
+            set.extend(read_guard(sh).list_snapshots()?);
         }
         Ok(set.into_iter().collect())
     }
@@ -205,7 +213,7 @@ impl QueryStore for ShardedStorage {
     fn iter_metric_names(&self) -> Vec<(Vec<u8>, Tsid)> {
         let mut out = Vec::new();
         for sh in &self.shards {
-            out.extend(guard(sh).iter_metric_names());
+            out.extend(read_guard(sh).iter_metric_names());
         }
         out
     }
@@ -216,12 +224,12 @@ impl QueryStore for ShardedStorage {
         range: TimeRange,
     ) -> Result<Vec<StoredSample>, StorageError> {
         let idx = self.shard_idx(metric_name);
-        guard(&self.shards[idx]).search_by_metric_name(metric_name, range)
+        read_guard(&self.shards[idx]).search_by_metric_name(metric_name, range)
     }
 
     fn lookup_tsid(&self, metric_name: &[u8]) -> Option<Tsid> {
         let idx = self.shard_idx(metric_name);
-        guard(&self.shards[idx]).lookup_tsid(metric_name)
+        read_guard(&self.shards[idx]).lookup_tsid(metric_name)
     }
 
     fn series_for_metric_name(&self, name_part: &[u8]) -> Vec<Vec<u8>> {
@@ -229,7 +237,7 @@ impl QueryStore for ShardedStorage {
         // so fan out and concatenate.
         let mut out = Vec::new();
         for sh in &self.shards {
-            out.extend(guard(sh).series_for_metric_name(name_part));
+            out.extend(read_guard(sh).series_for_metric_name(name_part));
         }
         out
     }
@@ -237,7 +245,7 @@ impl QueryStore for ShardedStorage {
     fn series_for_label(&self, label_name: &[u8], label_value: &[u8]) -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         for sh in &self.shards {
-            out.extend(guard(sh).series_for_label(label_name, label_value));
+            out.extend(read_guard(sh).series_for_label(label_name, label_value));
         }
         out
     }
@@ -245,7 +253,7 @@ impl QueryStore for ShardedStorage {
     fn distinct_metric_names(&self) -> Vec<Vec<u8>> {
         let mut set: std::collections::BTreeSet<Vec<u8>> = std::collections::BTreeSet::new();
         for sh in &self.shards {
-            set.extend(guard(sh).distinct_metric_names());
+            set.extend(read_guard(sh).distinct_metric_names());
         }
         set.into_iter().collect()
     }

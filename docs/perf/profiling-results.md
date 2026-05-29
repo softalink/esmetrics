@@ -152,3 +152,22 @@ over-decode (a 12 h window still decodes a full ~22.8 h block). Next lever:
 early-terminate the block decode past the range end (recovers the tail
 over-decode without changing block size, compression, or ingest), or finer
 blocks (regresses the ingest/disk wins).
+
+## Follow-on: per-shard Mutex → RwLock (concurrent reads)
+
+End-to-end, double-groupby-all stayed at ~2 s even though the read path now runs
+at 31M samples/s (a parallel read of its ~43M samples should be ~0.1 s). The
+gap: `ShardedStorage` held a `Mutex<Storage>` per shard, so the benchmark's 8
+concurrent queries — each fanning out across all shards — took *exclusive* locks
+and serialized, despite every `Storage` read method being `&self`. Switched to
+`RwLock<Storage>`: reads take `.read()` (shared), only ingest/flush/retention/
+snapshot-create (`&mut self`) take `.write()`.
+
+Modest but real: double-groupby-all 1.97 s→1.66 s, double-groupby-1
+232→172 ms, single-groupby 0.99→0.75 ms (near VM's 0.65 ms). Read serialization
+was a contributor, not the dominant residual — the remaining ~2.4–4.6× is raw
+decode + reduce volume per query (8 concurrent queries × tens of millions of
+samples each), plus the evaluator's per-series `ts[]`/`vals[]` re-extraction and
+~1.9× block over-decode. Those are the next levers (SIMD/early-terminate decode,
+or reduce evaluator copies) — deeper, with diminishing returns now that the
+worst query is within ~2.4× of VM (was 7.3×).

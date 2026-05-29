@@ -40,14 +40,14 @@ that gap is now **1.4–10×** (was 10–234× before the evaluator).
 **Query latency** (scale-1000, 10k series, median @ 8 workers; all 11 types
 return series counts matching VM):
 
-| query type | VM | EsMetrics | ratio | (before decode-layout fix) |
+| query type | VM | EsMetrics | ratio | (before decode-layout + RwLock) |
 |---|---|---|---|---|
-| single-groupby-1-1-1 | 0.65 ms | 0.99 ms | 1.5× | (0.90 ms, 1.4×) |
-| double-groupby-1 | 63 ms | 232 ms | 3.7× | (656 ms, 10×) |
-| double-groupby-5 | 329 ms | 969 ms | 2.9× | (2.69 s, 8.2×) |
-| double-groupby-all | 701 ms | 1.97 s | 2.8× | (5.13 s, 7.3×) |
-| cpu-max-all-1 | 1.56 ms | 5.40 ms | 3.5× | (7.92 ms, 5.1×) |
-| cpu-max-all-8 | 5.04 ms | 24.4 ms | 4.8× | (44 ms, 8.7×) |
+| single-groupby-1-1-1 | 0.65 ms | 0.75 ms | 1.2× | (0.90 ms, 1.4×) |
+| double-groupby-1 | 63 ms | 172 ms | 2.7× | (656 ms, 10×) |
+| double-groupby-5 | 329 ms | 873 ms | 2.7× | (2.69 s, 8.2×) |
+| double-groupby-all | 701 ms | 1.66 s | 2.4× | (5.13 s, 7.3×) |
+| cpu-max-all-1 | 1.56 ms | 5.15 ms | 3.3× | (7.92 ms, 5.1×) |
+| cpu-max-all-8 | 5.04 ms | 23.0 ms | 4.6× | (44 ms, 8.7×) |
 
 **Read of the results:** EsMetrics is now **ahead of VM on RAM (1.6×), disk,
 and ingest**, at **parity on correctness and the simplest query**. The
@@ -56,11 +56,14 @@ double-groupby-all), and the **decode-layout fix** (the per-series read no
 longer builds a per-sample `BTreeMap` — it accumulates into a flat sorted Vec,
 sorting + deduping only when parts/pending actually overlap; read path
 14M→31M samples/s, 2.24×) then cut the heavy-aggregation gap a further **2.6–
-2.8×** (double-groupby-all 7.3×→2.8×). No correctness regression — the fast path
+2.8×** (double-groupby-all 7.3×→2.8×). A follow-on `Mutex`→`RwLock` per shard (reads
+are all `&self`, so concurrent queries no longer serialize on the shard lock)
+took another ~1.2× (double-groupby-all 1.97 s→1.66 s, single-groupby
+0.99→0.75 ms — now near VM parity). No correctness regression — the fast path
 is proven equivalent to the generic path by `fast_path_matches_generic`, and the
 disk+pending dedup tests cover the merge path.
 
-**Remaining gap — heavier aggregations (now ~3–5×):** bound by raw per-query
+**Remaining gap — heavier aggregations (now ~2.4–4.6×):** bound by raw per-query
 data volume under workers=8 CPU saturation (each query decodes ~all touched
 series). *Tried and reverted:* block-level pre-aggregation (rollup windows
 1m–1h are far smaller than the ~23 h blocks, so no window contains a whole
