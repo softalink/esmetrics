@@ -17,6 +17,8 @@
 #![allow(clippy::cast_sign_loss)]
 #![allow(clippy::cast_precision_loss)]
 
+use std::borrow::Cow;
+
 use thiserror::Error;
 
 /// One parsed sample.
@@ -67,7 +69,7 @@ fn parse_line(
     // Parse `measurement,tag1=v1,tag2=v2`.
     let mut comma_parts = split_unescaped(key_section, ',');
     let measurement = comma_parts.next().ok_or(LineError::MissingMeasurement)?;
-    let mut tags: Vec<(String, String)> = Vec::new();
+    let mut tags: Vec<(Cow<'_, str>, Cow<'_, str>)> = Vec::new();
     for tp in comma_parts {
         let Some(eq) = find_unescaped(tp, '=') else { return Err(LineError::BadTag) };
         let k = unescape_tag(&tp[..eq]);
@@ -78,7 +80,7 @@ fn parse_line(
 
     // Parse fields: `f1=v1,f2=v2`.
     let mut field_parts = split_unescaped(fields_section, ',');
-    let mut field_pairs: Vec<(String, i64)> = Vec::new();
+    let mut field_pairs: Vec<(Cow<'_, str>, i64)> = Vec::new();
     for fp in field_parts.by_ref() {
         let Some(eq) = find_unescaped(fp, '=') else { return Err(LineError::BadField) };
         let k = unescape_tag(&fp[..eq]);
@@ -127,7 +129,7 @@ fn parse_line(
 
     // Emit one sample per field: `measurement[_field]{suffix}`.
     for (field, value) in field_pairs {
-        let with_field = field != "value";
+        let with_field = field.as_ref() != "value";
         let cap = measurement.len() + usize::from(with_field) * (1 + field.len()) + suffix.len();
         let mut metric_name = Vec::with_capacity(cap);
         metric_name.extend_from_slice(measurement.as_bytes());
@@ -231,7 +233,13 @@ fn split_top_level_spaces(s: &str) -> std::vec::IntoIter<&str> {
     out.into_iter()
 }
 
-fn unescape_tag(s: &str) -> String {
+/// Unescape a tag/field key or tag value. Borrows the input unchanged when it
+/// contains no backslash (the overwhelmingly common case — zero allocation);
+/// only escaped strings allocate.
+fn unescape_tag(s: &str) -> Cow<'_, str> {
+    if !s.as_bytes().contains(&b'\\') {
+        return Cow::Borrowed(s);
+    }
     let mut out = String::with_capacity(s.len());
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -244,7 +252,7 @@ fn unescape_tag(s: &str) -> String {
         out.push(bytes[i] as char);
         i += 1;
     }
-    out
+    Cow::Owned(out)
 }
 
 #[derive(Debug, Error)]
