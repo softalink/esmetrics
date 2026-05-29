@@ -121,7 +121,7 @@ pub struct TimeRange {
 }
 
 /// Decoded sample yielded by [`Storage::search_by_metric_name`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StoredSample {
     pub timestamp_ms: i64,
     pub value: i64,

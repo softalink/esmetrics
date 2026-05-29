@@ -353,9 +353,11 @@ fn try_single_pass<S: QueryStore + Sync>(
     let lo = start_ms.saturating_sub(range_ms);
     let window = TimeRange { min_timestamp_ms: lo, max_timestamp_ms: end_ms };
 
-    // Read + roll up each series in parallel. `step_vals[i]` is the rollup for
-    // `steps[i]`, or `None` if that step's window is empty (matching the
-    // generic path, which omits empty windows).
+    // Read + roll up each series in parallel (one rayon task per series — this
+    // spreads the decode across all cores, which beats a per-part batched scan
+    // that would cap parallelism at the part count). `step_vals[i]` is the
+    // rollup for `steps[i]`, or `None` if that step's window is empty (matching
+    // the generic path, which omits empty windows).
     let per_series: Result<Vec<(Vec<u8>, Vec<Option<f64>>)>, EvalError> = names
         .into_par_iter()
         .map(|name| {

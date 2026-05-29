@@ -61,11 +61,13 @@ proven equivalent to the generic path by `fast_path_matches_generic`).
 **Remaining gaps:**
 1. **Ingest (1.9×):** ~520M `String`/`Vec` allocations per load — a zero-copy
    line parser is the lever.
-2. **Heavier aggregations (5–10×):** now bound by raw per-query data volume
-   under workers=8 CPU saturation (each query decodes ~all touched series). The
-   levers are **block-level pre-aggregation** (per-block min/max/sum/count so
-   full-block rollups skip decompression) and a columnar read path —
-   storage-format work.
+2. **Heavier aggregations (5–10×):** bound by raw per-query data volume under
+   workers=8 CPU saturation (each query decodes ~all touched series). *Tried
+   and reverted:* block-level pre-aggregation (rollup windows 1m–1h are far
+   smaller than the ~23 h blocks, so no window contains a whole block) and a
+   batched per-part read (it caps parallelism at the part count, losing to the
+   per-series parallel read). The remaining lever is reducing decode volume
+   per query — finer block granularity or a columnar value layout.
 
 **Bottom line on "surpass on every benchmark":** ahead on RAM + disk, parity on
 correctness/capability and the simplest query; ingest and heavier aggregations
