@@ -12,9 +12,59 @@ ingest, `GET /api/v1/query_range` for queries. VM ran in Docker
 that inflates VM's apparent ingest rate and empties its query results if
 not corrected).
 
-## TL;DR
+## Current standings — after the perf/correctness work (2026-05-29)
 
-EsMetrics is behind VictoriaMetrics on **every** benchmark measured:
+The improvements in [`improvement-plan.md`](./improvement-plan.md) (incremental
+flush, zstd-level fix, size-tiered compaction, RwLock concurrency, regex +
+`by(__name__)` correctness, metric-name + label indexes, range-query cache,
+sharded ingest) changed the picture qualitatively. EsMetrics now runs the
+**full scale-1000 (10k-series) benchmark** — which was *impossible* in the
+original run (the flush blocker forced a drop to scale-10).
+
+**Capability + correctness:**
+
+| Dimension | VictoriaMetrics | EsMetrics (now) | EsMetrics (original) |
+|---|---|---|---|
+| Runs full scale-1000 | yes | **yes** | no (flush blocker → scale-10) |
+| Query correctness | 11/11 | **11/11** ✅ | 4/11 |
+| Ingest (persisting) | 645K rows/s | **292K rows/s** (2.2×) | didn't persist |
+| Ingest peak RAM | 2.09 GB | **1.67 GB** (less) | 5.5 GB |
+| Query concurrency | scales | scales (RwLock) | flat |
+
+**Query latency** (scale-1000, 10k series, median @ 8 workers; all 11 types
+now return series counts matching VM):
+
+| query type | VM | EsMetrics | ratio |
+|---|---|---|---|
+| single-groupby-1-1-1 | 0.65 ms | 14.7 ms | 23× |
+| single-groupby-1-1-12 | 1.00 ms | 149 ms | 149× |
+| single-groupby-1-8-1 | 1.06 ms | 75.9 ms | 72× |
+| single-groupby-5-1-1 | 1.07 ms | 70.2 ms | 66× |
+| single-groupby-5-1-12 | 2.28 ms | 767 ms | 336× |
+| single-groupby-5-8-1 | 1.84 ms | 390 ms | 211× |
+| double-groupby-1 | 61 ms | 940 ms | 15× |
+| double-groupby-5 | 356 ms | 9.0 s | 25× |
+| double-groupby-all | 681 ms | 23.7 s | 35× |
+| cpu-max-all-1 | 1.16 ms | 38 ms | 33× |
+| cpu-max-all-8 | 4.18 ms | 191 ms | 46× |
+
+**Read of the results:** correctness and capability are now at parity (11/11,
+full scale, concurrent, persists, lower RAM); ingest is within ~2.2×. **Query
+latency remains 15–336× behind VM** — VM has a mature, columnar, deeply
+optimized query engine (block-level indexes, vectorized rollups, parallel
+per-series execution). EsMetrics' generic per-step evaluator, while now
+correct and far faster than it was, is the dominant remaining gap. The worst
+cases are wide time-range (`*-12`, 12 h) and all-host aggregations
+(`double-groupby-all`), which are data-volume/compute bound — the next levers
+are vectorized rollup evaluation and parallelizing query execution across
+series/shards.
+
+---
+
+## TL;DR (original run — historical baseline)
+
+The first run (below) found EsMetrics behind on **every** dimension; it is
+kept for context. The deltas above show what the improvement work changed.
 
 | Dimension | VictoriaMetrics | EsMetrics | Gap |
 |---|---|---|---|
