@@ -154,6 +154,10 @@ pub trait QueryStore {
     ) -> Result<Vec<StoredSample>, StorageError>;
     /// TSID for an exact metric-name key, if present (existence check).
     fn lookup_tsid(&self, metric_name: &[u8]) -> Option<Tsid>;
+    /// Full series keys whose metric-name part equals `name_part`.
+    fn series_for_metric_name(&self, name_part: &[u8]) -> Vec<Vec<u8>>;
+    /// Every distinct metric-name part in the store.
+    fn distinct_metric_names(&self) -> Vec<Vec<u8>>;
 }
 
 impl QueryStore for Storage {
@@ -169,6 +173,12 @@ impl QueryStore for Storage {
     }
     fn lookup_tsid(&self, metric_name: &[u8]) -> Option<Tsid> {
         Storage::lookup_tsid(self, metric_name)
+    }
+    fn series_for_metric_name(&self, name_part: &[u8]) -> Vec<Vec<u8>> {
+        Storage::series_for_metric_name(self, name_part)
+    }
+    fn distinct_metric_names(&self) -> Vec<Vec<u8>> {
+        Storage::distinct_metric_names(self)
     }
 }
 
@@ -215,6 +225,19 @@ pub struct Storage {
     /// incrementally on flush/merge/retention so reads prune parts by time
     /// range without re-scanning the parts directory on every query.
     parts_index: Vec<PartMeta>,
+
+    /// Inverted index: metric-name part (bytes before `{`) → the full series
+    /// keys sharing that name. Lets name-anchored selectors resolve to just
+    /// the relevant series instead of scanning every series.
+    metric_name_index: HashMap<Vec<u8>, Vec<Vec<u8>>>,
+}
+
+/// The metric-name part of a full series key: the bytes before the first `{`.
+fn metric_name_part(key: &[u8]) -> &[u8] {
+    match key.iter().position(|&b| b == b'{') {
+        Some(i) => &key[..i],
+        None => key,
+    }
 }
 
 impl Storage {
@@ -248,10 +271,25 @@ impl Storage {
             next_part_id: 0,
             pending_samples: 0,
             parts_index: Vec::new(),
+            metric_name_index: HashMap::new(),
         };
         storage.load_index()?;
         storage.bootstrap_from_disk()?;
+        storage.rebuild_metric_name_index();
         Ok(storage)
+    }
+
+    /// Rebuild the metric-name → series-keys index from the current
+    /// `name_to_tsid` map. Called once after open; kept current incrementally
+    /// by [`Self::get_or_create_tsid`] thereafter.
+    fn rebuild_metric_name_index(&mut self) {
+        self.metric_name_index.clear();
+        for key in self.name_to_tsid.keys() {
+            self.metric_name_index
+                .entry(metric_name_part(key).to_vec())
+                .or_default()
+                .push(key.clone());
+        }
     }
 
     fn load_index(&mut self) -> Result<(), StorageError> {
@@ -459,8 +497,25 @@ impl Storage {
         let tsid = Tsid { metric_id, ..Default::default() };
         self.name_to_tsid.insert(name.to_vec(), tsid);
         self.tsid_to_name.insert(tsid, name.to_vec());
+        self.metric_name_index
+            .entry(metric_name_part(name).to_vec())
+            .or_default()
+            .push(name.to_vec());
         self.index_dirty = true;
         tsid
+    }
+
+    /// Full series keys whose metric-name part equals `name_part`. Empty if
+    /// none. Used by the query layer to avoid scanning unrelated series.
+    #[must_use]
+    pub fn series_for_metric_name(&self, name_part: &[u8]) -> Vec<Vec<u8>> {
+        self.metric_name_index.get(name_part).cloned().unwrap_or_default()
+    }
+
+    /// Every distinct metric-name part known to this store.
+    #[must_use]
+    pub fn distinct_metric_names(&self) -> Vec<Vec<u8>> {
+        self.metric_name_index.keys().cloned().collect()
     }
 
     /// Sync any pending samples to a new on-disk part.
@@ -1029,6 +1084,31 @@ mod tests {
                 start.elapsed()
             );
         }
+    }
+
+    #[test]
+    fn metric_name_index_groups_series_by_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut s = Storage::open(tmp.path().join("d")).unwrap();
+        s.ingest(&[
+            Sample { metric_name: b"cpu{host=\"a\"}".to_vec(), timestamp_ms: 1, value: 1 },
+            Sample { metric_name: b"cpu{host=\"b\"}".to_vec(), timestamp_ms: 1, value: 2 },
+            Sample { metric_name: b"mem{host=\"a\"}".to_vec(), timestamp_ms: 1, value: 3 },
+        ])
+        .unwrap();
+        let mut cpu = s.series_for_metric_name(b"cpu");
+        cpu.sort();
+        assert_eq!(cpu, vec![b"cpu{host=\"a\"}".to_vec(), b"cpu{host=\"b\"}".to_vec()]);
+        assert_eq!(s.series_for_metric_name(b"mem").len(), 1);
+        assert!(s.series_for_metric_name(b"nope").is_empty());
+        let mut names = s.distinct_metric_names();
+        names.sort();
+        assert_eq!(names, vec![b"cpu".to_vec(), b"mem".to_vec()]);
+        // Survives reopen (rebuilt from the persisted name map).
+        s.flush().unwrap();
+        s.shutdown().unwrap();
+        let s2 = Storage::open(tmp.path().join("d")).unwrap();
+        assert_eq!(s2.series_for_metric_name(b"cpu").len(), 2);
     }
 
     #[test]

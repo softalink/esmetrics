@@ -954,25 +954,13 @@ where
 
     let mut bare = inner.clone();
     bare.range_ms = None;
-    let candidate_names: Vec<Vec<u8>> = if let Some(name) = &bare.name
-        && bare.matchers.is_empty()
-    {
-        let mut out = Vec::new();
-        for (n, _) in storage.iter_metric_names() {
-            if n == name.as_bytes()
-                || (n.starts_with(name.as_bytes()) && n.get(name.len()).copied() == Some(b'{'))
-            {
-                out.push(n);
-            }
-        }
-        out
-    } else {
-        storage
-            .iter_metric_names()
-            .into_iter()
-            .filter_map(|(n, _)| if matches_selector(&n, &bare) { Some(n) } else { None })
-            .collect()
-    };
+    // Narrow to series matching the selector's metric-name constraint via the
+    // name index, then apply the full matcher set. This is the hot path for
+    // every `*_over_time` query, so avoiding the all-series scan matters.
+    let candidate_names: Vec<Vec<u8>> = candidate_series(storage, &bare)
+        .into_iter()
+        .filter(|n| matches_selector(n, &bare))
+        .collect();
 
     let window_start = ctx.timestamp_ms - range_ms;
     let window_end = ctx.timestamp_ms;
@@ -1491,25 +1479,13 @@ fn evaluate_over_time(
 
     let mut bare = inner.clone();
     bare.range_ms = None;
-    let candidate_names: Vec<Vec<u8>> = if let Some(name) = &bare.name
-        && bare.matchers.is_empty()
-    {
-        let mut out = Vec::new();
-        for (n, _) in storage.iter_metric_names() {
-            if n == name.as_bytes()
-                || (n.starts_with(name.as_bytes()) && n.get(name.len()).copied() == Some(b'{'))
-            {
-                out.push(n);
-            }
-        }
-        out
-    } else {
-        storage
-            .iter_metric_names()
-            .into_iter()
-            .filter_map(|(n, _)| if matches_selector(&n, &bare) { Some(n) } else { None })
-            .collect()
-    };
+    // Narrow to series matching the selector's metric-name constraint via the
+    // name index, then apply the full matcher set. This is the hot path for
+    // every `*_over_time` query, so avoiding the all-series scan matters.
+    let candidate_names: Vec<Vec<u8>> = candidate_series(storage, &bare)
+        .into_iter()
+        .filter(|n| matches_selector(n, &bare))
+        .collect();
 
     let window_start = ctx.timestamp_ms - range_ms;
     let window_end = ctx.timestamp_ms;
@@ -2089,6 +2065,40 @@ fn canonical_storage_key(sel: &VectorSelector) -> Result<Vec<u8>, EvalError> {
         out.push(b'}');
     }
     Ok(out)
+}
+
+/// Candidate series keys for a selector, narrowed via the metric-name index
+/// when the selector pins `__name__` (a literal name or `__name__=~regex`).
+/// Falls back to the full series list otherwise. The caller still applies
+/// [`matches_selector`], so an over-broad candidate set stays correct — this
+/// only ever *narrows*, never drops a real match.
+fn candidate_series(storage: &impl QueryStore, sel: &VectorSelector) -> Vec<Vec<u8>> {
+    // Literal name: `sel.name` or a `__name__="..."` matcher.
+    let literal = sel.name.as_deref().or_else(|| {
+        sel.matchers
+            .iter()
+            .find(|m| m.name == "__name__" && m.op == MatchOp::Equal)
+            .map(|m| m.value.as_str())
+    });
+    if let Some(name) = literal {
+        return storage.series_for_metric_name(name.as_bytes());
+    }
+    // `__name__=~regex` (only when there's no literal name): filter the small
+    // set of distinct names by the regex, then expand to their series.
+    if sel.name.is_none()
+        && let Some(m) =
+            sel.matchers.iter().find(|m| m.name == "__name__" && m.op == MatchOp::RegexMatch)
+    {
+        let mut out = Vec::new();
+        for dn in storage.distinct_metric_names() {
+            if std::str::from_utf8(&dn).is_ok_and(|s| regex_full_match(s, &m.value)) {
+                out.extend(storage.series_for_metric_name(&dn));
+            }
+        }
+        return out;
+    }
+    // No usable name constraint: full scan.
+    storage.iter_metric_names().into_iter().map(|(n, _)| n).collect()
 }
 
 fn matches_selector(name: &[u8], sel: &VectorSelector) -> bool {

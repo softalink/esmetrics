@@ -97,8 +97,23 @@ workers (~1 core of work while VM uses many).
   RSS still ~1.65 GB; gap to VM's 643K narrowed ~3.5× → ~2.2×. All query
   correctness preserved (1000-series fan-out; regex + `by(__name__)` intact).
 - **Remaining headroom:** per-batch sample clone into shard buckets and
-  influx parsing are the next ingest costs; a true inverted label index would
-  cut the O(all-series) query scan further.
+  influx parsing are the next ingest costs.
+
+## Metric-name index — narrow the query candidate scan  ✅ DONE (2026-05-29)
+**Was:** the evaluator resolved selectors by scanning *every* series and
+running `matches_selector` on each — O(all series) per query.
+- ✅ Added a `metric-name part → series-keys` index in `Storage` (maintained
+  incrementally; rebuilt on open), exposed via `QueryStore::series_for_metric_name`
+  + `distinct_metric_names` (Storage + fan-out for ShardedStorage).
+- ✅ The `*_over_time` hot path now narrows candidates by the selector's
+  `__name__` constraint (literal or `=~regex`) via the index, then applies
+  `matches_selector`. Correctness preserved (only ever narrows).
+- **Result (scale-1000, 10k series, med @ 8 workers):** single-groupby-1-1-1
+  172→71 ms (**2.4×**), single-groupby-5-1-1 617→388 ms (**1.6×**). Broad
+  aggregations (double-groupby across all hosts) are unaffected — now
+  data-read-bound.
+- **Next lever:** a full inverted **label** index (e.g. host) + per-series
+  block-offset caching would speed the broad/data-bound aggregations.
 
 ## Final gate
 Re-run the full TSBS suite at scale=1000 and regenerate

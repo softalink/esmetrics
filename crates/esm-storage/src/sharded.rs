@@ -199,6 +199,24 @@ impl QueryStore for ShardedStorage {
         let idx = self.shard_idx(metric_name);
         guard(&self.shards[idx]).lookup_tsid(metric_name)
     }
+
+    fn series_for_metric_name(&self, name_part: &[u8]) -> Vec<Vec<u8>> {
+        // A name's series may live in different shards (they hash by full key),
+        // so fan out and concatenate.
+        let mut out = Vec::new();
+        for sh in &self.shards {
+            out.extend(guard(sh).series_for_metric_name(name_part));
+        }
+        out
+    }
+
+    fn distinct_metric_names(&self) -> Vec<Vec<u8>> {
+        let mut set: std::collections::BTreeSet<Vec<u8>> = std::collections::BTreeSet::new();
+        for sh in &self.shards {
+            set.extend(guard(sh).distinct_metric_names());
+        }
+        set.into_iter().collect()
+    }
 }
 
 #[cfg(test)]
