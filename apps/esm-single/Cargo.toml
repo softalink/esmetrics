@@ -34,3 +34,6 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "
 tower = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
