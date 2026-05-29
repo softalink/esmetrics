@@ -208,10 +208,11 @@ pub struct Storage {
     /// persistent generation counter.
     next_metric_id: u64,
 
-    /// Buffered samples awaiting flush: `tsid -> sorted (ts, value) pairs`.
-    /// Phase 1E will move this behind a flush-trigger heuristic; today we
-    /// flush only on explicit `flush()` / `shutdown()`.
-    pending: BTreeMap<Tsid, Vec<(i64, i64)>>,
+    /// Buffered samples awaiting flush: `tsid -> (ts, value) pairs`.
+    /// An `FnvHashMap` for O(1) amortized per-sample insert — the on-disk part
+    /// requires tsids in sorted order, but that ordering is needed only once at
+    /// flush (where the tsids are sorted), not on every ingested sample.
+    pending: FnvHashMap<Tsid, Vec<(i64, i64)>>,
 
     /// Parts directory. Each part is a `BlockStreamWriter`-produced subdir.
     parts_dir: PathBuf,
@@ -326,7 +327,7 @@ impl Storage {
             name_to_tsid: FnvHashMap::default(),
             tsid_to_name: HashMap::new(),
             next_metric_id: 1,
-            pending: BTreeMap::new(),
+            pending: FnvHashMap::default(),
             parts_dir,
             index_path,
             index_dirty: false,
@@ -674,9 +675,14 @@ impl Storage {
             BlockStreamWriter::create(&part_path, esm_compress::zstd_codec::DEFAULT_LEVEL)
                 .map_err(|e| StorageError::CreatePart { path: part_path.clone(), source: e })?;
 
-        // Drain the pending map in TSID order.
+        // Drain the pending map and sort by TSID — the on-disk metaindex is
+        // binary-searched by tsid, so blocks must be written in ascending tsid
+        // order. Sorting once here is cheaper than keeping an ordered map hot
+        // on every ingested sample (the ingest hot path).
         let pending = std::mem::take(&mut self.pending);
         self.pending_samples = 0;
+        let mut pending: Vec<(Tsid, Vec<(i64, i64)>)> = pending.into_iter().collect();
+        pending.sort_unstable_by_key(|&(tsid, _)| tsid);
         for (tsid, mut samples) in pending {
             samples.sort_by_key(|&(ts, _)| ts);
             // Time-series block size is bounded by MAX_ROWS_PER_BLOCK; split

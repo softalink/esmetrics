@@ -50,12 +50,27 @@ and the gap to VM (648K rows/s) narrows to ~1.5× at 16 workers. The sub-linear
 curve points at contention on the per-shard `Mutex` (writers > shards under
 flush) on top of the per-sample CPU cost.
 
-## Indicated next optimization
+## Optimization applied + result
 
-The dominant, addressable cost is the **per-sample buffer path**. The pending
-`BTreeMap<Tsid, Vec<(i64,i64)>>` pays O(log n) on every sample purely to keep
-keys ordered for flush — but flush can sort once. Replacing it with an FNV
-`HashMap<Tsid, Vec<(i64,i64)>>` (O(1) amortized insert) + sort-on-flush removes
-that per-sample log factor from 67% of the ingest cost. This is the first
-ingest change with a profiled cost model behind it, vs. the prior three
-allocation experiments that were flat.
+The dominant, addressable cost was the **per-sample buffer path**. The pending
+`BTreeMap<Tsid, Vec<(i64,i64)>>` paid O(log n) on every sample purely to keep
+keys ordered for flush — but flush can sort once. Replaced it with an FNV
+`HashMap<Tsid, Vec<(i64,i64)>>` (O(1) amortized insert) + a single
+`sort_unstable_by_key` over the tsids at flush (the on-disk metaindex is
+binary-searched by tsid, so blocks must still be written sorted — just once,
+not maintained per sample).
+
+Measured, validated against TSBS cpu-only (scale-1000, 25.92M rows):
+
+| metric                       | before   | after    | gain |
+|------------------------------|----------|----------|------|
+| buffer phase (in-process)    | 1.83M/s  | 2.06M/s  | +12% |
+| end-to-end ingest, 8 workers | 329,623  | 395,728  | +20% |
+| end-to-end ingest, 16 workers| 433,828  | 541,669  | +25% |
+
+At 16 workers the gap to VM (648K rows/s) closed from ~1.5× to **~1.20×**. This
+was the first ingest change with a profiled cost model behind it — vs. the three
+prior allocation experiments, which were all flat. The remaining gap is the FNV
+intern (`get_or_create_tsid`) still in the 66% buffer slice plus the sub-linear
+per-shard `Mutex` contention; both are the next levers if more ingest headroom
+is wanted.
