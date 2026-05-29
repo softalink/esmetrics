@@ -196,7 +196,7 @@ pub struct Storage {
     /// `metric_name (raw bytes) -> Tsid`. Populated lazily as new metrics
     /// arrive. Persisted to a sidecar file in Phase 1D; for now we treat the
     /// mapping as ephemeral and recompute on each open from on-disk parts.
-    name_to_tsid: HashMap<Vec<u8>, Tsid>,
+    name_to_tsid: FnvHashMap<Vec<u8>, Tsid>,
     /// Reverse mapping for query results.
     tsid_to_name: HashMap<Tsid, Vec<u8>>,
 
@@ -244,6 +244,31 @@ pub struct Storage {
 
 /// `(label_name, label_value)` → full series keys carrying that label pair.
 type LabelIndex = HashMap<(Vec<u8>, Vec<u8>), Vec<Vec<u8>>>;
+
+/// FNV-1a hasher — much faster than std's SipHash for the short byte keys in
+/// the hot ingest path (metric-name → TSID lookup, once per sample). Internal
+/// indexes only; not exposed to untrusted hash-flooding.
+struct FnvHasher(u64);
+impl Default for FnvHasher {
+    fn default() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+}
+impl std::hash::Hasher for FnvHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        let mut h = self.0;
+        for &b in bytes {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        self.0 = h;
+    }
+}
+type FnvBuild = std::hash::BuildHasherDefault<FnvHasher>;
+type FnvHashMap<K, V> = HashMap<K, V, FnvBuild>;
 
 /// The metric-name part of a full series key: the bytes before the first `{`.
 fn metric_name_part(key: &[u8]) -> &[u8] {
@@ -294,7 +319,7 @@ impl Storage {
         let mut storage = Self {
             data_dir,
             _lock: lock,
-            name_to_tsid: HashMap::new(),
+            name_to_tsid: FnvHashMap::default(),
             tsid_to_name: HashMap::new(),
             next_metric_id: 1,
             pending: BTreeMap::new(),
@@ -515,10 +540,35 @@ impl Storage {
     /// validation (timestamp ordering, label-set parsing).
     pub fn ingest(&mut self, samples: &[Sample]) -> Result<(), StorageError> {
         for s in samples {
-            let tsid = self.get_or_create_tsid(&s.metric_name);
-            self.pending.entry(tsid).or_default().push((s.timestamp_ms, s.value));
+            self.buffer_one(&s.metric_name, s.timestamp_ms, s.value);
         }
-        self.pending_samples += samples.len();
+        self.after_ingest(samples.len())
+    }
+
+    /// Ingest only `samples[i]` for `i` in `indices`. Lets a sharded wrapper
+    /// route a batch to per-shard subsets without cloning any `Sample`.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] if a triggered flush fails.
+    pub fn ingest_selected(
+        &mut self,
+        samples: &[Sample],
+        indices: &[usize],
+    ) -> Result<(), StorageError> {
+        for &i in indices {
+            let s = &samples[i];
+            self.buffer_one(&s.metric_name, s.timestamp_ms, s.value);
+        }
+        self.after_ingest(indices.len())
+    }
+
+    fn buffer_one(&mut self, name: &[u8], timestamp_ms: i64, value: i64) {
+        let tsid = self.get_or_create_tsid(name);
+        self.pending.entry(tsid).or_default().push((timestamp_ms, value));
+    }
+
+    fn after_ingest(&mut self, added: usize) -> Result<(), StorageError> {
+        self.pending_samples += added;
         // Bound memory: flush once the buffer crosses the threshold. Frequent
         // small flushes also keep each series short per part, which avoids the
         // expensive large-series flush path.

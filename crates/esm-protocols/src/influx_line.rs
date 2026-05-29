@@ -97,38 +97,45 @@ fn parse_line(
         None => now_ms,
     };
 
-    // Emit one sample per field.
-    for (field, value) in field_pairs {
-        let metric = if field == "value" {
-            measurement.to_string()
-        } else {
-            format!("{measurement}_{field}")
-        };
-        let mut metric_name = Vec::new();
-        metric_name.extend_from_slice(metric.as_bytes());
-        if !tags.is_empty() {
-            metric_name.push(b'{');
-            for (i, (k, v)) in tags.iter().enumerate() {
-                if i > 0 {
-                    metric_name.push(b',');
-                }
-                metric_name.extend_from_slice(k.as_bytes());
-                metric_name.extend_from_slice(b"=\"");
-                for c in v.chars() {
-                    match c {
-                        '\\' => metric_name.extend_from_slice(b"\\\\"),
-                        '"' => metric_name.extend_from_slice(b"\\\""),
-                        '\n' => metric_name.extend_from_slice(b"\\n"),
-                        other => {
-                            let mut buf = [0u8; 4];
-                            metric_name.extend_from_slice(other.encode_utf8(&mut buf).as_bytes());
-                        }
+    // Build the canonical label suffix `{k="v",...}` once per line; the tag
+    // set is identical across all of a line's fields, so the escape loop need
+    // not run per field. Each field then just concatenates prefix + suffix.
+    let mut suffix = Vec::new();
+    if !tags.is_empty() {
+        suffix.push(b'{');
+        for (i, (k, v)) in tags.iter().enumerate() {
+            if i > 0 {
+                suffix.push(b',');
+            }
+            suffix.extend_from_slice(k.as_bytes());
+            suffix.extend_from_slice(b"=\"");
+            for c in v.chars() {
+                match c {
+                    '\\' => suffix.extend_from_slice(b"\\\\"),
+                    '"' => suffix.extend_from_slice(b"\\\""),
+                    '\n' => suffix.extend_from_slice(b"\\n"),
+                    other => {
+                        let mut buf = [0u8; 4];
+                        suffix.extend_from_slice(other.encode_utf8(&mut buf).as_bytes());
                     }
                 }
-                metric_name.push(b'"');
             }
-            metric_name.push(b'}');
+            suffix.push(b'"');
         }
+        suffix.push(b'}');
+    }
+
+    // Emit one sample per field: `measurement[_field]{suffix}`.
+    for (field, value) in field_pairs {
+        let with_field = field != "value";
+        let cap = measurement.len() + usize::from(with_field) * (1 + field.len()) + suffix.len();
+        let mut metric_name = Vec::with_capacity(cap);
+        metric_name.extend_from_slice(measurement.as_bytes());
+        if with_field {
+            metric_name.push(b'_');
+            metric_name.extend_from_slice(field.as_bytes());
+        }
+        metric_name.extend_from_slice(&suffix);
         out.push(ParsedSample { metric_name, timestamp_ms, value });
     }
     Ok(())

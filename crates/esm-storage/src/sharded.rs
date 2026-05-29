@@ -70,14 +70,15 @@ impl ShardedStorage {
         if self.shards.len() == 1 {
             return guard(&self.shards[0]).ingest(samples);
         }
-        let mut buckets: Vec<Vec<Sample>> = (0..self.shards.len()).map(|_| Vec::new()).collect();
-        for s in samples {
-            let idx = self.shard_idx(&s.metric_name);
-            buckets[idx].push(s.clone());
+        // Route by index — no `Sample` clone. Each shard ingests its subset
+        // directly from the original slice.
+        let mut buckets: Vec<Vec<usize>> = (0..self.shards.len()).map(|_| Vec::new()).collect();
+        for (i, s) in samples.iter().enumerate() {
+            buckets[self.shard_idx(&s.metric_name)].push(i);
         }
-        for (i, batch) in buckets.into_iter().enumerate() {
-            if !batch.is_empty() {
-                guard(&self.shards[i]).ingest(&batch)?;
+        for (shard, indices) in buckets.into_iter().enumerate() {
+            if !indices.is_empty() {
+                guard(&self.shards[shard]).ingest_selected(samples, &indices)?;
             }
         }
         Ok(())
