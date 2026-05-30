@@ -8,7 +8,10 @@
 //! this through the [`QueryStore`] trait, agnostic to partitioning.
 
 use std::path::{Path, PathBuf};
-use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::thread::JoinHandle;
+use std::time::Duration;
 
 use crate::storage::{
     KeyedEntry, QueryStore, Sample, Storage, StorageError, StoredSample, TimeRange,
@@ -19,10 +22,21 @@ use crate::timeseries::Tsid;
 /// always lands in (and is read from) the same shard. The per-shard lock is an
 /// `RwLock` so concurrent queries (all `&self` reads) share a shard instead of
 /// serializing — only ingest/flush/retention (`&mut self`) take it exclusively.
+///
+/// A background compactor thread keeps part count bounded: the ingest path
+/// only spills pending (cheap, frequent → low buffered memory), and merging
+/// runs off the write lock on the compactor thread (read-lock to pick a batch,
+/// merge to a temp part with no lock held, brief write-lock to commit). This
+/// is what lets ingest stay ahead of VM *and* peak RAM stay below it — without
+/// it, bounding RAM by flushing more would either stall ingest (synchronous
+/// merge) or explode part count (no merge), per the trilemma in
+/// `docs/perf/tsbs-comparison.md`.
 #[allow(missing_debug_implementations)]
 pub struct ShardedStorage {
     data_dir: PathBuf,
-    shards: Vec<RwLock<Storage>>,
+    shards: Arc<Vec<RwLock<Storage>>>,
+    compactor_stop: Arc<AtomicBool>,
+    compactor: Mutex<Option<JoinHandle<()>>>,
 }
 
 /// Shared read lock on a shard, recovering on poison instead of panicking. A
@@ -46,11 +60,82 @@ impl ShardedStorage {
     pub fn open(data_dir: impl Into<PathBuf>, n_shards: usize) -> Result<Self, StorageError> {
         let data_dir = data_dir.into();
         let n = n_shards.max(1);
+        // Divide a fixed total pending budget across shards so peak buffered
+        // memory is independent of shard count — frequent cheap flushes keep
+        // RAM low; the background compactor (below) keeps part count bounded.
+        let per_shard = Self::TOTAL_PENDING_BUDGET_SAMPLES / n;
         let mut shards = Vec::with_capacity(n);
         for i in 0..n {
-            shards.push(RwLock::new(Storage::open(data_dir.join(format!("shard-{i:02}")))?));
+            let mut shard = Storage::open(data_dir.join(format!("shard-{i:02}")))?;
+            shard.set_flush_threshold(per_shard);
+            shards.push(RwLock::new(shard));
         }
-        Ok(Self { data_dir, shards })
+        let shards = Arc::new(shards);
+        let compactor_stop = Arc::new(AtomicBool::new(false));
+        let compactor = Mutex::new(Some(Self::spawn_compactor(
+            Arc::clone(&shards),
+            Arc::clone(&compactor_stop),
+        )));
+        Ok(Self { data_dir, shards, compactor_stop, compactor })
+    }
+
+    /// Total samples buffered across all shards before a flush. Split evenly so
+    /// peak pending memory doesn't scale with shard count. Low because flushes
+    /// are cheap (no synchronous merge); the compactor reclaims parts.
+    const TOTAL_PENDING_BUDGET_SAMPLES: usize = 8_000_000;
+
+    /// Spawn the background compactor. It sweeps shards forever (until `stop`):
+    /// pick a merge batch under a read lock, merge it to a temp part with no
+    /// lock held, then commit the swap under a brief write lock. Sleeps only
+    /// when a full sweep found nothing to do, so it keeps pace under load
+    /// without spinning when idle.
+    fn spawn_compactor(shards: Arc<Vec<RwLock<Storage>>>, stop: Arc<AtomicBool>) -> JoinHandle<()> {
+        std::thread::spawn(move || {
+            // One sweep over all shards at a given tier-fill threshold. Returns
+            // whether any shard was compacted.
+            let sweep = |min_parts: usize| -> bool {
+                let mut did = false;
+                for sh in shards.iter() {
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let (batch, parts_dir) = {
+                        let g = read_guard(sh);
+                        (g.pick_merge_batch(min_parts), g.parts_dir().to_path_buf())
+                    };
+                    let Some(batch) = batch else { continue };
+                    // Heavy merge runs with NO lock held (input parts are
+                    // immutable); only the commit takes the write lock briefly.
+                    // A transient error (e.g. retention raced a delete) just
+                    // retries next sweep.
+                    if let Ok(tmp) = Storage::merge_files_to_tmp(&batch, &parts_dir) {
+                        let _ = write_guard(sh).commit_merged(&batch, &tmp);
+                        did = true;
+                    }
+                }
+                did
+            };
+            while !stop.load(Ordering::Relaxed) {
+                // Size-tiered compaction (merge tiers of ≥MERGE_MIN_PARTS).
+                // Deliberately NOT more aggressive: consolidating the last few
+                // parts per shard down to one is expensive (rewrites large
+                // parts) and, running concurrently with queries, costs more in
+                // CPU/lock contention than the extra parts cost in reads.
+                if !sweep(Storage::MERGE_MIN_PARTS) {
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+            }
+        })
+    }
+
+    /// Stop and join the background compactor (idempotent).
+    fn stop_compactor(&self) {
+        self.compactor_stop.store(true, Ordering::Relaxed);
+        if let Ok(mut guard) = self.compactor.lock()
+            && let Some(handle) = guard.take()
+        {
+            let _ = handle.join();
+        }
     }
 
     /// Number of shards.
@@ -120,19 +205,23 @@ impl ShardedStorage {
     /// # Errors
     /// Propagates the first shard flush failure.
     pub fn flush(&self) -> Result<(), StorageError> {
-        for sh in &self.shards {
-            write_guard(sh).flush()?;
+        // No synchronous merge — the background compactor is the sole merger,
+        // so it never contends with this path on the temp merge dir.
+        for sh in self.shards.iter() {
+            write_guard(sh).flush_no_merge()?;
         }
         Ok(())
     }
 
-    /// Flush and release every shard.
+    /// Stop the compactor and flush every shard. Shards release their data-dir
+    /// locks when this `ShardedStorage` is dropped.
     ///
     /// # Errors
-    /// Propagates the first shard shutdown failure.
+    /// Propagates the first shard flush failure.
     pub fn shutdown(self) -> Result<(), StorageError> {
-        for m in self.shards {
-            m.into_inner().unwrap_or_else(PoisonError::into_inner).shutdown()?;
+        self.stop_compactor();
+        for sh in self.shards.iter() {
+            write_guard(sh).flush_no_merge()?;
         }
         Ok(())
     }
@@ -155,7 +244,7 @@ impl ShardedStorage {
     /// Propagates the first shard failure.
     pub fn enforce_retention(&self, cutoff_ms: i64) -> Result<usize, StorageError> {
         let mut removed = 0;
-        for sh in &self.shards {
+        for sh in self.shards.iter() {
             removed += write_guard(sh).enforce_retention(cutoff_ms)?;
         }
         Ok(removed)
@@ -167,7 +256,7 @@ impl ShardedStorage {
     /// Propagates the first shard failure.
     pub fn enforce_snapshot_retention(&self, cutoff_ms: i64) -> Result<usize, StorageError> {
         let mut removed = 0;
-        for sh in &self.shards {
+        for sh in self.shards.iter() {
             removed += read_guard(sh).enforce_snapshot_retention(cutoff_ms)?;
         }
         Ok(removed)
@@ -179,7 +268,7 @@ impl ShardedStorage {
     /// # Errors
     /// Propagates the first shard failure.
     pub fn create_snapshot(&self, name: &str) -> Result<PathBuf, StorageError> {
-        for sh in &self.shards {
+        for sh in self.shards.iter() {
             write_guard(sh).create_snapshot(name)?;
         }
         Ok(self.data_dir.clone())
@@ -190,7 +279,7 @@ impl ShardedStorage {
     /// # Errors
     /// Propagates the first shard failure.
     pub fn delete_snapshot(&self, name: &str) -> Result<(), StorageError> {
-        for sh in &self.shards {
+        for sh in self.shards.iter() {
             read_guard(sh).delete_snapshot(name)?;
         }
         Ok(())
@@ -202,17 +291,26 @@ impl ShardedStorage {
     /// Propagates the first shard failure.
     pub fn list_snapshots(&self) -> Result<Vec<String>, StorageError> {
         let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        for sh in &self.shards {
+        for sh in self.shards.iter() {
             set.extend(read_guard(sh).list_snapshots()?);
         }
         Ok(set.into_iter().collect())
     }
 }
 
+impl Drop for ShardedStorage {
+    fn drop(&mut self) {
+        // Stop the compactor so its `Arc` clone of the shards is released and
+        // the thread doesn't outlive the store (e.g. when used without an
+        // explicit `shutdown()`).
+        self.stop_compactor();
+    }
+}
+
 impl QueryStore for ShardedStorage {
     fn iter_metric_names(&self) -> Vec<(Vec<u8>, Tsid)> {
         let mut out = Vec::new();
-        for sh in &self.shards {
+        for sh in self.shards.iter() {
             out.extend(read_guard(sh).iter_metric_names());
         }
         out
@@ -236,7 +334,7 @@ impl QueryStore for ShardedStorage {
         // A name's series may live in different shards (they hash by full key),
         // so fan out and concatenate.
         let mut out = Vec::new();
-        for sh in &self.shards {
+        for sh in self.shards.iter() {
             out.extend(read_guard(sh).series_for_metric_name(name_part));
         }
         out
@@ -244,7 +342,7 @@ impl QueryStore for ShardedStorage {
 
     fn series_for_label(&self, label_name: &[u8], label_value: &[u8]) -> Vec<Vec<u8>> {
         let mut out = Vec::new();
-        for sh in &self.shards {
+        for sh in self.shards.iter() {
             out.extend(read_guard(sh).series_for_label(label_name, label_value));
         }
         out
@@ -252,7 +350,7 @@ impl QueryStore for ShardedStorage {
 
     fn distinct_metric_names(&self) -> Vec<Vec<u8>> {
         let mut set: std::collections::BTreeSet<Vec<u8>> = std::collections::BTreeSet::new();
-        for sh in &self.shards {
+        for sh in self.shards.iter() {
             set.extend(read_guard(sh).distinct_metric_names());
         }
         set.into_iter().collect()

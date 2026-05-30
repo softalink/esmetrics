@@ -5,7 +5,14 @@
 //! ```text
 //! cargo test -p esm-compress --release --test decode_split -- --ignored --nocapture
 //! ```
-#![allow(clippy::print_stderr, clippy::cast_precision_loss, clippy::unwrap_used)]
+#![allow(
+    clippy::print_stderr,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation,
+    clippy::unreadable_literal,
+    clippy::unwrap_used
+)]
 
 use std::time::Instant;
 

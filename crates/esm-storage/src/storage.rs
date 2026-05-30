@@ -258,6 +258,11 @@ pub struct Storage {
     /// ingest instead of growing until an explicit `flush()`/`shutdown()`.
     pending_samples: usize,
 
+    /// Flush once `pending_samples` crosses this. Defaults to
+    /// [`Self::DEFAULT_FLUSH_THRESHOLD_SAMPLES`]; [`ShardedStorage`] lowers it so
+    /// total buffered memory stays bounded regardless of shard count.
+    flush_threshold_samples: usize,
+
     /// Cached time-range metadata for every on-disk part. Maintained
     /// incrementally on flush/merge/retention so reads prune parts by time
     /// range without re-scanning the parts directory on every query.
@@ -360,6 +365,7 @@ impl Storage {
             index_dirty: false,
             next_part_id: 0,
             pending_samples: 0,
+            flush_threshold_samples: Self::DEFAULT_FLUSH_THRESHOLD_SAMPLES,
             parts_index: Vec::new(),
             metric_name_index: HashMap::new(),
             label_index: HashMap::new(),
@@ -525,13 +531,21 @@ impl Storage {
                 continue;
             }
             let part_path = entry.path();
-            // Track the highest "part-N" suffix so new parts don't collide.
-            if let Some(name) = part_path.file_name().and_then(|s| s.to_str())
-                && let Some(rest) = name.strip_prefix("part-")
-                && let Ok(n) = rest.parse::<u64>()
-                && n >= max_id_seen
-            {
-                max_id_seen = n + 1;
+            // Only `part-*` dirs are real parts. Anything else is a crashed
+            // compaction's temp output (e.g. `.merge-tmp`); remove it.
+            match part_path.file_name().and_then(|s| s.to_str()) {
+                Some(name) if name.starts_with("part-") => {
+                    if let Some(rest) = name.strip_prefix("part-")
+                        && let Ok(n) = rest.parse::<u64>()
+                        && n >= max_id_seen
+                    {
+                        max_id_seen = n + 1;
+                    }
+                }
+                _ => {
+                    std::fs::remove_dir_all(&part_path)?;
+                    continue;
+                }
             }
             // Discover TSIDs in this part.
             let mut reader = BlockStreamReader::open(&part_path)
@@ -636,15 +650,35 @@ impl Storage {
         // Bound memory: flush once the buffer crosses the threshold. Frequent
         // small flushes also keep each series short per part, which avoids the
         // expensive large-series flush path.
-        if self.pending_samples >= Self::FLUSH_THRESHOLD_SAMPLES {
-            self.flush()?;
+        if self.pending_samples >= self.flush_threshold_samples {
+            // Auto-flush does NOT compact — that runs off the ingest path (the
+            // background compactor / explicit flush), so sustained ingest isn't
+            // stalled by a synchronous merge and peak buffered memory stays low.
+            self.flush_part(false)?;
         }
         Ok(())
     }
 
-    /// Auto-flush trigger: buffer this many samples before spilling a part.
-    /// ~1M (ts,value) pairs ≈ a few tens of MB of live buffer.
-    const FLUSH_THRESHOLD_SAMPLES: usize = 1_000_000;
+    /// Default auto-flush trigger: buffer this many samples before spilling a
+    /// part. ~1M (ts,value) pairs ≈ a few tens of MB of live buffer.
+    const DEFAULT_FLUSH_THRESHOLD_SAMPLES: usize = 1_000_000;
+
+    /// Lower bound on the flush threshold so heavily-sharded hosts still build
+    /// reasonably-sized parts.
+    const MIN_FLUSH_THRESHOLD_SAMPLES: usize = 125_000;
+
+    /// Override the auto-flush sample threshold (clamped to a floor).
+    /// [`ShardedStorage`] divides a fixed total pending budget across shards so
+    /// peak buffered memory is independent of shard count.
+    pub fn set_flush_threshold(&mut self, samples: usize) {
+        self.flush_threshold_samples = samples.max(Self::MIN_FLUSH_THRESHOLD_SAMPLES);
+    }
+
+    /// On-disk parts directory (for the background compactor's off-lock merge).
+    #[must_use]
+    pub fn parts_dir(&self) -> &Path {
+        &self.parts_dir
+    }
 
     fn get_or_create_tsid(&mut self, name: &[u8]) -> Tsid {
         if let Some(t) = self.name_to_tsid.get(name) {
@@ -687,6 +721,24 @@ impl Storage {
     /// # Errors
     /// Returns [`StorageError`] on I/O failure or encoding error.
     pub fn flush(&mut self) -> Result<(), StorageError> {
+        self.flush_part(true)
+    }
+
+    /// Spill pending to a new part WITHOUT compacting. [`ShardedStorage`] uses
+    /// this so its background compactor is the sole merger (no contention on
+    /// the temp merge dir), keeping the ingest path free of merge work.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] on I/O failure.
+    pub fn flush_no_merge(&mut self) -> Result<(), StorageError> {
+        self.flush_part(false)
+    }
+
+    /// Spill pending to a new part. `merge` runs opportunistic compaction
+    /// afterward (explicit `flush()`/`shutdown()`); the auto-flush trigger
+    /// passes `false` so the background compactor handles merging off the
+    /// ingest path.
+    fn flush_part(&mut self, merge: bool) -> Result<(), StorageError> {
         self.save_index()?;
         if self.pending.is_empty() {
             return Ok(());
@@ -724,7 +776,9 @@ impl Storage {
         self.parts_index.push(PartMeta::load(part_path)?);
         // Opportunistically merge small parts. Keeps part count bounded so
         // read amplification stays sane.
-        self.maybe_merge_small_parts()?;
+        if merge {
+            self.maybe_merge_small_parts()?;
+        }
         Ok(())
     }
 
@@ -735,7 +789,7 @@ impl Storage {
     /// the old "merge the 4 smallest on every flush" policy that repeatedly
     /// re-merged a growing part with tiny new ones (heavy write amplification
     /// that dominated bulk-ingest cost).
-    const MERGE_MIN_PARTS: usize = 4;
+    pub(crate) const MERGE_MIN_PARTS: usize = 4;
     /// Cap parts per merge so a single compaction's in-memory working set
     /// stays bounded regardless of how full a tier gets.
     const MERGE_MAX_BATCH: usize = 8;
@@ -750,45 +804,54 @@ impl Storage {
     /// Returns [`StorageError`] on any I/O failure during read, write, or
     /// removal.
     pub fn maybe_merge_small_parts(&mut self) -> Result<(), StorageError> {
-        let entries = match std::fs::read_dir(&self.parts_dir) {
-            Ok(it) => it,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(e.into()),
-        };
-        // Bucket parts by size tier = floor(log2(bytes)).
+        let Some(batch) = self.pick_merge_batch(Self::MERGE_MIN_PARTS) else { return Ok(()) };
+        let tmp = Self::merge_files_to_tmp(&batch, &self.parts_dir)?;
+        self.commit_merged(&batch, &tmp)
+    }
+
+    /// Select the smallest size tier that holds at least `min_parts` parts (up
+    /// to [`Self::MERGE_MAX_BATCH`]), or `None`. Read-only, so the background
+    /// compactor can call it under a shared lock then merge off-lock.
+    /// `min_parts == MERGE_MIN_PARTS` is the efficient size-tiered policy used
+    /// during active ingest; the compactor drops to `2` once caught up to
+    /// consolidate leftover parts down toward one per shard (good read
+    /// amplification) without that write-amplification cost during ingest.
+    #[must_use]
+    pub fn pick_merge_batch(&self, min_parts: usize) -> Option<Vec<PathBuf>> {
+        let entries = std::fs::read_dir(&self.parts_dir).ok()?;
+        // Bucket `part-*` dirs by size tier = floor(log2(bytes)). Anything else
+        // (e.g. a `.merge-tmp` in flight) is skipped.
         let mut tiers: BTreeMap<u32, Vec<PathBuf>> = BTreeMap::new();
-        for entry in entries {
-            let entry = entry?;
-            if !entry.file_type()?.is_dir() {
+        for entry in entries.flatten() {
+            if !entry.file_type().is_ok_and(|t| t.is_dir()) {
                 continue;
             }
             let p = entry.path();
-            let size = part_byte_size(&p)?;
+            if !p.file_name().and_then(|s| s.to_str()).is_some_and(|n| n.starts_with("part-")) {
+                continue;
+            }
+            let size = part_byte_size(&p).unwrap_or(0);
             let tier = 64 - size.max(1).leading_zeros();
             tiers.entry(tier).or_default().push(p);
         }
-        // Compact the smallest tier that has enough parts. Only one tier per
-        // call keeps each post-flush merge cheap; subsequent flushes drain the
-        // rest. `BTreeMap` iterates tiers ascending, so smallest first.
-        for group in tiers.into_values() {
-            if group.len() >= Self::MERGE_MIN_PARTS {
-                let batch: Vec<PathBuf> = group.into_iter().take(Self::MERGE_MAX_BATCH).collect();
-                return self.merge_parts(&batch);
-            }
-        }
-        Ok(())
+        tiers.into_values().find(|g| g.len() >= min_parts).map(|mut g| {
+            g.truncate(Self::MERGE_MAX_BATCH);
+            g
+        })
     }
 
-    /// Force a merge of `parts` into a single new part. Public so callers
-    /// (and tests) can trigger compaction without waiting for the heuristic.
+    /// Read every block of `parts` and rewrite them into a single fresh part
+    /// under `parts_dir/.merge-tmp`, returning that temp path. Pure file I/O —
+    /// takes no `Storage` state, so the background compactor runs it WITHOUT
+    /// holding the shard lock (input parts are immutable). The temp part is
+    /// promoted by [`Self::commit_merged`].
     ///
     /// # Errors
-    /// Returns [`StorageError`] on read/write/delete failure.
-    pub fn merge_parts(&mut self, parts: &[PathBuf]) -> Result<(), StorageError> {
-        if parts.len() < 2 {
-            return Ok(());
-        }
-        // Collect every block from every part, keyed by TSID, then rewrite.
+    /// Returns [`StorageError`] on read/write failure.
+    pub fn merge_files_to_tmp(
+        parts: &[PathBuf],
+        parts_dir: &Path,
+    ) -> Result<PathBuf, StorageError> {
         let mut collected: BTreeMap<Tsid, Vec<(i64, i64)>> = BTreeMap::new();
         for p in parts {
             let mut reader = BlockStreamReader::open(p)
@@ -797,20 +860,18 @@ impl Storage {
                 .next_block()
                 .map_err(|e| StorageError::ReadPart { path: p.clone(), source: e })?
             {
-                let tsid = block.header.tsid;
-                let entry = collected.entry(tsid).or_default();
+                let entry = collected.entry(block.header.tsid).or_default();
                 for (ts, v) in block.timestamps.iter().zip(block.values.iter()) {
                     entry.push((*ts, *v));
                 }
             }
         }
-        // Pick a new part id.
-        let part_id = self.next_part_id;
-        self.next_part_id += 1;
-        let out_path = self.parts_dir.join(format!("part-{part_id:06}"));
-        let mut writer =
-            BlockStreamWriter::create(&out_path, esm_compress::zstd_codec::DEFAULT_LEVEL)
-                .map_err(|e| StorageError::CreatePart { path: out_path.clone(), source: e })?;
+        let tmp = parts_dir.join(".merge-tmp");
+        if tmp.exists() {
+            std::fs::remove_dir_all(&tmp)?;
+        }
+        let mut writer = BlockStreamWriter::create(&tmp, esm_compress::zstd_codec::DEFAULT_LEVEL)
+            .map_err(|e| StorageError::CreatePart { path: tmp.clone(), source: e })?;
         for (tsid, mut samples) in collected {
             samples.sort_by_key(|&(ts, _)| ts);
             for chunk in samples.chunks(timeseries::MAX_ROWS_PER_BLOCK as usize) {
@@ -818,21 +879,56 @@ impl Storage {
                 let vs: Vec<i64> = chunk.iter().map(|&(_, v)| v).collect();
                 writer
                     .write_block(tsid, &ts, &vs, DEFAULT_SCALE, DEFAULT_PRECISION_BITS)
-                    .map_err(|e| StorageError::WriteBlock { path: out_path.clone(), source: e })?;
+                    .map_err(|e| StorageError::WriteBlock { path: tmp.clone(), source: e })?;
             }
         }
-        writer
-            .finish()
-            .map_err(|e| StorageError::FinishPart { path: out_path.clone(), source: e })?;
-        // Remove input parts only after the output is fsynced.
-        for p in parts {
+        writer.finish().map_err(|e| StorageError::FinishPart { path: tmp.clone(), source: e })?;
+        Ok(tmp)
+    }
+
+    /// Promote a merged temp part (from [`Self::merge_files_to_tmp`]) into a
+    /// real part and retire its inputs: rename `tmp` to a new `part-NNNNNN`,
+    /// swap the parts index, then delete the input dirs. Brief, so the
+    /// background compactor holds the exclusive lock only for the swap, not the
+    /// merge. If any input vanished meanwhile (retention), aborts and discards
+    /// the temp part — never resurrecting retired data.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] on rename/fsync/delete failure.
+    pub fn commit_merged(&mut self, inputs: &[PathBuf], tmp: &Path) -> Result<(), StorageError> {
+        let known: std::collections::HashSet<&PathBuf> =
+            self.parts_index.iter().map(|m| &m.path).collect();
+        if !inputs.iter().all(|p| known.contains(p)) {
+            // An input was retired while we merged off-lock; discard the temp.
+            let _ = std::fs::remove_dir_all(tmp);
+            return Ok(());
+        }
+        let part_id = self.next_part_id;
+        self.next_part_id += 1;
+        let out_path = self.parts_dir.join(format!("part-{part_id:06}"));
+        std::fs::rename(tmp, &out_path)?;
+        esm_platform::durability::fsync_dir(&self.parts_dir)?;
+        // Input dirs retired only after the output is durably in place.
+        for p in inputs {
             std::fs::remove_dir_all(p)?;
         }
         esm_platform::durability::fsync_dir(&self.parts_dir)?;
-        // Keep the parts cache consistent: drop merged inputs, add the output.
-        self.parts_index.retain(|m| !parts.contains(&m.path));
+        self.parts_index.retain(|m| !inputs.contains(&m.path));
         self.parts_index.push(PartMeta::load(out_path)?);
         Ok(())
+    }
+
+    /// Force a merge of `parts` into a single new part (synchronous). Public so
+    /// callers and tests can trigger compaction without the heuristic.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] on read/write/delete failure.
+    pub fn merge_parts(&mut self, parts: &[PathBuf]) -> Result<(), StorageError> {
+        if parts.len() < 2 {
+            return Ok(());
+        }
+        let tmp = Self::merge_files_to_tmp(parts, &self.parts_dir)?;
+        self.commit_merged(parts, &tmp)
     }
 
     /// Create a snapshot: a hardlinked clone of the current parts directory
