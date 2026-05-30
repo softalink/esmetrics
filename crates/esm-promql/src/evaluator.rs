@@ -365,7 +365,10 @@ fn try_single_pass<S: QueryStore + Sync>(
         steps
             .iter()
             .map(|&st| {
-                let wlo = samples.partition_point(|s| s.timestamp_ms < st - range_ms);
+                // PromQL range `[d]` at `st` selects `(st-d, st]` — left-open,
+                // matching VictoriaMetrics/Prometheus: a sample at exactly
+                // `st-range_ms` is excluded.
+                let wlo = samples.partition_point(|s| s.timestamp_ms <= st - range_ms);
                 let whi = samples.partition_point(|s| s.timestamp_ms <= st);
                 (wlo != whi).then(|| reduce_over_time_samples(kind, &samples[wlo..whi]))
             })
@@ -1921,7 +1924,10 @@ fn evaluate_over_time(
         .filter(|n| matches_selector(n, &bare))
         .collect();
 
-    let window_start = ctx.timestamp_ms - range_ms;
+    // PromQL range `[d]` selects `(t-d, t]` — left-open, matching VM/Prometheus.
+    // Storage returns `[min,max]` inclusive, so shift the lower bound +1ms to
+    // exclude a sample at exactly `t-range_ms`.
+    let window_start = ctx.timestamp_ms - range_ms + 1;
     let window_end = ctx.timestamp_ms;
     let mut out: Vec<InstantVectorElement> = Vec::new();
     for name in candidate_names {
@@ -3277,6 +3283,36 @@ mod tests {
             let generic = evaluate_range_generic(&expr, &s, start, end, step).unwrap();
             assert_eq!(norm(fast), norm(generic), "fast vs generic mismatch for: {q}");
         }
+    }
+
+    #[test]
+    fn over_time_range_window_is_left_open() {
+        // PromQL `m[d]` at `t` selects the half-open interval `(t-d, t]`: a
+        // sample at exactly `t-d` is excluded (matches VictoriaMetrics &
+        // Prometheus). Regression test for the range-window boundary fix.
+        let (s, _t) = open_storage(&[
+            (b"m", 1000, 10),
+            (b"m", 2000, 20),
+            (b"m", 3000, 30),
+            (b"m", 4000, 40),
+            (b"m", 5000, 50),
+        ]);
+        let ctx = EvalContext::instant(5000);
+        // Window (3000, 5000] => {4000, 5000}; the sample at t-d=3000 is excluded.
+        let count = match evaluate(&parse("count_over_time(m[2000ms])").unwrap(), &s, ctx).unwrap()
+        {
+            Value::InstantVector(v) => v[0].value,
+            other => panic!("expected instant vector, got {other:?}"),
+        };
+        assert!(
+            (count - 2.0).abs() < 1e-9,
+            "count_over_time must exclude the sample at t-range; got {count}"
+        );
+        let sum = match evaluate(&parse("sum_over_time(m[2000ms])").unwrap(), &s, ctx).unwrap() {
+            Value::InstantVector(v) => v[0].value,
+            other => panic!("expected instant vector, got {other:?}"),
+        };
+        assert!((sum - 90.0).abs() < 1e-9, "sum_over_time window is (t-range, t]; got {sum}");
     }
 
     #[test]
