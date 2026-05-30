@@ -649,6 +649,7 @@ dependencies = [
  "esm-common",
  "esm-compress",
  "esm-platform",
+ "rayon",
  "serde",
  "serde_json",
  "tempfile",

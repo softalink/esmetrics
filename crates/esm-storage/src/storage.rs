@@ -67,6 +67,23 @@ fn bytes_to_hex(b: &[u8]) -> String {
     s
 }
 
+/// Stable-sort by timestamp, then dedup keeping the LAST sample per timestamp
+/// (samples must be pushed in ascending priority order, so newest wins on
+/// duplicate timestamps).
+fn sort_dedup_keep_last(out: &mut Vec<StoredSample>) {
+    out.sort_by_key(|s| s.timestamp_ms);
+    let mut w = 0;
+    for r in 0..out.len() {
+        if w > 0 && out[w - 1].timestamp_ms == out[r].timestamp_ms {
+            out[w - 1] = out[r];
+        } else {
+            out[w] = out[r];
+            w += 1;
+        }
+    }
+    out.truncate(w);
+}
+
 /// Compute the on-disk byte size of a part directory by summing all regular
 /// file sizes inside it. Returns zero for an empty (or missing) directory.
 fn part_byte_size(path: &Path) -> std::io::Result<u64> {
@@ -191,6 +208,28 @@ pub trait QueryStore {
     fn series_for_label(&self, label_name: &[u8], label_value: &[u8]) -> Vec<Vec<u8>>;
     /// Every distinct metric-name part in the store.
     fn distinct_metric_names(&self) -> Vec<Vec<u8>>;
+
+    /// Read each of `names` over `range` and map its samples through `f`,
+    /// returning results in input order. The closure runs while the samples are
+    /// live, so only its (small) result is retained — letting wide queries roll
+    /// up thousands of series without materializing them all. The default reads
+    /// each series individually; [`crate::ShardedStorage`] overrides it with a
+    /// per-part scan (open each overlapping part once).
+    ///
+    /// # Errors
+    /// Propagates storage I/O / decode failures.
+    fn scan_series_map<R, F>(
+        &self,
+        names: &[Vec<u8>],
+        range: TimeRange,
+        f: F,
+    ) -> Result<Vec<R>, StorageError>
+    where
+        R: Send,
+        F: Fn(&[StoredSample]) -> R + Sync,
+    {
+        names.iter().map(|n| Ok(f(&self.search_by_metric_name(n, range)?))).collect()
+    }
 }
 
 impl QueryStore for Storage {
@@ -1181,21 +1220,93 @@ impl Storage {
             }
         }
         if needs_merge {
-            // Stable sort keeps equal-timestamp samples in push (priority)
-            // order; the dedup below then keeps the last (newest) per timestamp.
-            out.sort_by_key(|s| s.timestamp_ms);
-            let mut w = 0;
-            for r in 0..out.len() {
-                if w > 0 && out[w - 1].timestamp_ms == out[r].timestamp_ms {
-                    out[w - 1] = out[r];
-                } else {
-                    out[w] = out[r];
-                    w += 1;
-                }
-            }
-            out.truncate(w);
+            sort_dedup_keep_last(&mut out);
         }
         Ok(out)
+    }
+
+    /// Batched per-part scan: read samples for many TSIDs over `range`, opening
+    /// each overlapping part **once** instead of once per series. `tsids` must
+    /// be sorted ascending; returns `result[i]` for `tsids[i]` (sorted, deduped
+    /// with the same newest-wins semantics as [`Self::search_by_tsid`]). This is
+    /// the read path the evaluator uses for wide queries (rollups over thousands
+    /// of series), where per-series part re-opening dominates.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] on I/O failure or part corruption.
+    pub fn scan_tsids(
+        &self,
+        tsids: &[Tsid],
+        range: TimeRange,
+    ) -> Result<Vec<Vec<StoredSample>>, StorageError> {
+        let mut acc: Vec<Vec<StoredSample>> = vec![Vec::new(); tsids.len()];
+        if tsids.is_empty() {
+            return Ok(acc);
+        }
+        let max_tsid = tsids[tsids.len() - 1];
+        let idx_of: FnvHashMap<Tsid, usize> =
+            tsids.iter().enumerate().map(|(i, t)| (*t, i)).collect();
+        let mut last_ts: Vec<i64> = vec![i64::MIN; tsids.len()];
+        let mut needs_merge: Vec<bool> = vec![false; tsids.len()];
+
+        for meta in &self.parts_index {
+            if meta.max_ts < range.min_timestamp_ms || meta.min_ts > range.max_timestamp_ms {
+                continue;
+            }
+            let part_path = &meta.path;
+            let mut reader = BlockStreamReader::open_with_index(
+                part_path,
+                meta.header.clone(),
+                Arc::clone(&meta.metaindex),
+            )
+            .map_err(|e| StorageError::OpenPart { path: part_path.clone(), source: e })?;
+            reader.seek_to_tsid(tsids[0]);
+            while let Some(header) = reader
+                .next_block_header()
+                .map_err(|e| StorageError::ReadPart { path: part_path.clone(), source: e })?
+            {
+                if header.tsid > max_tsid {
+                    break;
+                }
+                let Some(&i) = idx_of.get(&header.tsid) else { continue };
+                if header.max_timestamp < range.min_timestamp_ms
+                    || header.min_timestamp > range.max_timestamp_ms
+                {
+                    continue;
+                }
+                let (timestamps, values) = reader
+                    .read_data_block_borrowed(&header)
+                    .map_err(|e| StorageError::ReadPart { path: part_path.clone(), source: e })?;
+                for (ts, val) in timestamps.iter().zip(values.iter()) {
+                    if *ts >= range.min_timestamp_ms && *ts <= range.max_timestamp_ms {
+                        if *ts <= last_ts[i] {
+                            needs_merge[i] = true;
+                        }
+                        last_ts[i] = *ts;
+                        acc[i].push(StoredSample { timestamp_ms: *ts, value: *val });
+                    }
+                }
+            }
+        }
+        for (i, tsid) in tsids.iter().enumerate() {
+            if let Some(buf) = self.pending.get(tsid) {
+                for &(ts, v) in buf {
+                    if ts >= range.min_timestamp_ms && ts <= range.max_timestamp_ms {
+                        if ts <= last_ts[i] {
+                            needs_merge[i] = true;
+                        }
+                        last_ts[i] = ts;
+                        acc[i].push(StoredSample { timestamp_ms: ts, value: v });
+                    }
+                }
+            }
+        }
+        for (i, samples) in acc.iter_mut().enumerate() {
+            if needs_merge[i] {
+                sort_dedup_keep_last(samples);
+            }
+        }
+        Ok(acc)
     }
 
     /// Look up the TSID for an already-ingested metric, if known.

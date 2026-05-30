@@ -84,6 +84,12 @@ impl ShardedStorage {
     /// are cheap (no synchronous merge); the compactor reclaims parts.
     const TOTAL_PENDING_BUDGET_SAMPLES: usize = 8_000_000;
 
+    /// Cap on series per `scan_tsids` call. Chunking caps a pathologically wide
+    /// shard's transient memory, but each chunk re-reads part headers (seek is
+    /// only index-block granular), so this is set above a typical shard's
+    /// candidate count to keep the common wide query single-pass.
+    const SCAN_CHUNK_SERIES: usize = 512;
+
     /// Spawn the background compactor. It sweeps shards forever (until `stop`):
     /// pick a merge batch under a read lock, merge it to a temp part with no
     /// lock held, then commit the swap under a brief write lock. Sleeps only
@@ -355,6 +361,61 @@ impl QueryStore for ShardedStorage {
         }
         set.into_iter().collect()
     }
+
+    /// Per-part scan override: route names to shards, then on each shard (in
+    /// parallel) resolve TSIDs and read them with one per-part scan
+    /// (`Storage::scan_tsids`) instead of one part-open per series, rolling each
+    /// series up through `f` while its samples are live. Scans in bounded chunks
+    /// so transient memory stays small on the widest queries.
+    fn scan_series_map<R, F>(
+        &self,
+        names: &[Vec<u8>],
+        range: TimeRange,
+        f: F,
+    ) -> Result<Vec<R>, StorageError>
+    where
+        R: Send,
+        F: Fn(&[StoredSample]) -> R + Sync,
+    {
+        use rayon::prelude::*;
+        let mut per_shard: Vec<Vec<usize>> = (0..self.shards.len()).map(|_| Vec::new()).collect();
+        for (i, name) in names.iter().enumerate() {
+            per_shard[self.shard_idx(name)].push(i);
+        }
+        // Scan shards in parallel — each does one per-part pass for its
+        // candidates; this parallelism is what makes the wide-query scan beat
+        // the per-series rayon read.
+        let partials: Result<Vec<Vec<(usize, R)>>, StorageError> = per_shard
+            .into_par_iter()
+            .enumerate()
+            .map(|(sh, idxs)| -> Result<Vec<(usize, R)>, StorageError> {
+                if idxs.is_empty() {
+                    return Ok(Vec::new());
+                }
+                let g = read_guard(&self.shards[sh]);
+                let mut cands: Vec<(Tsid, usize)> = Vec::with_capacity(idxs.len());
+                let mut out: Vec<(usize, R)> = Vec::with_capacity(idxs.len());
+                for &i in &idxs {
+                    match g.lookup_tsid(&names[i]) {
+                        Some(t) => cands.push((t, i)),
+                        None => out.push((i, f(&[]))),
+                    }
+                }
+                cands.sort_by_key(|&(t, _)| t);
+                for chunk in cands.chunks(Self::SCAN_CHUNK_SERIES) {
+                    let tsids: Vec<Tsid> = chunk.iter().map(|&(t, _)| t).collect();
+                    let samples = g.scan_tsids(&tsids, range)?;
+                    for (k, &(_, orig)) in chunk.iter().enumerate() {
+                        out.push((orig, f(&samples[k])));
+                    }
+                }
+                Ok(out)
+            })
+            .collect();
+        let mut flat: Vec<(usize, R)> = partials?.into_iter().flatten().collect();
+        flat.sort_by_key(|&(i, _)| i);
+        Ok(flat.into_iter().map(|(_, r)| r).collect())
+    }
 }
 
 #[cfg(test)]
@@ -363,6 +424,40 @@ mod tests {
 
     fn sample(name: &[u8], ts: i64, v: i64) -> Sample {
         Sample { metric_name: name.to_vec(), timestamp_ms: ts, value: v }
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_wrap)]
+    fn scan_series_map_matches_per_series() {
+        // The per-part scan must return exactly what per-series reads do —
+        // across multiple parts + pending, including duplicate timestamps where
+        // the newest write must win.
+        let tmp = tempfile::tempdir().unwrap();
+        let s = ShardedStorage::open(tmp.path().join("d"), 8).unwrap();
+        let names: Vec<Vec<u8>> = (0..300).map(|i| format!("m_{i}").into_bytes()).collect();
+        for chunk in 0..3i64 {
+            let mut batch = Vec::new();
+            for (i, n) in names.iter().enumerate() {
+                for k in 0..5i64 {
+                    batch.push(sample(n, 1000 + k * 1000, i as i64 * 100 + chunk * 10 + k));
+                }
+            }
+            s.ingest(&batch).unwrap();
+            if chunk < 2 {
+                s.flush().unwrap();
+            }
+        }
+        let range = TimeRange { min_timestamp_ms: 0, max_timestamp_ms: 1_000_000 };
+        let expected: Vec<Vec<StoredSample>> =
+            names.iter().map(|n| s.search_by_metric_name(n, range).unwrap()).collect();
+        let got: Vec<Vec<StoredSample>> =
+            s.scan_series_map(&names, range, <[StoredSample]>::to_vec).unwrap();
+        assert_eq!(got.len(), names.len());
+        for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
+            assert_eq!(g, e, "scan vs per-series mismatch for series {i}");
+        }
+        assert_eq!(got[7].len(), 5);
+        assert_eq!(got[7][0].value, 7 * 100 + 2 * 10); // chunk 2, k 0
     }
 
     #[test]

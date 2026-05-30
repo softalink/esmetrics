@@ -291,6 +291,11 @@ fn over_time_kind(name: &str) -> Option<OverTimeKind> {
     })
 }
 
+/// Candidate count at or above which `try_single_pass` switches from the
+/// per-series parallel read to a per-part scan (opening each overlapping
+/// part once); below it, selective queries seek straight to their few series.
+const WIDE_SCAN_THRESHOLD: usize = 256;
+
 /// Single-pass fast path for `[agg(]rollup_over_time(selector[range])[)]`.
 ///
 /// Resolves the candidate series once, reads each series' whole window once and
@@ -353,34 +358,42 @@ fn try_single_pass<S: QueryStore + Sync>(
     let lo = start_ms.saturating_sub(range_ms);
     let window = TimeRange { min_timestamp_ms: lo, max_timestamp_ms: end_ms };
 
-    // Read + roll up each series in parallel (one rayon task per series — this
-    // spreads the decode across all cores, which beats a per-part batched scan
-    // that would cap parallelism at the part count). `step_vals[i]` is the
-    // rollup for `steps[i]`, or `None` if that step's window is empty (matching
-    // the generic path, which omits empty windows).
-    let per_series: Result<Vec<(Vec<u8>, Vec<Option<f64>>)>, EvalError> = names
-        .into_par_iter()
-        .map(|name| {
-            let samples = storage
-                .search_by_metric_name(&name, window)
-                .map_err(|e| EvalError::Storage(e.to_string()))?;
-            // Roll up directly over the `StoredSample` slice — no per-series
-            // `ts`/`vals` extraction (which copied every decoded sample twice,
-            // the dominant evaluator-side cost for heavy aggregations).
-            let step_vals: Vec<Option<f64>> = steps
-                .iter()
-                .map(|&st| {
-                    let wlo = samples.partition_point(|s| s.timestamp_ms < st - range_ms);
-                    let whi = samples.partition_point(|s| s.timestamp_ms <= st);
-                    (wlo != whi).then(|| reduce_over_time_samples(kind, &samples[wlo..whi]))
-                })
-                .collect();
-            Ok((name, step_vals))
-        })
-        .collect();
-    let per_series = match per_series {
-        Ok(v) => v,
-        Err(e) => return Some(Err(e)),
+    // Roll one series' samples into a per-step value (`None` for an empty
+    // window, matching the generic path), over the `StoredSample` slice — no
+    // per-series `ts`/`vals` extraction.
+    let roll = |samples: &[StoredSample]| -> Vec<Option<f64>> {
+        steps
+            .iter()
+            .map(|&st| {
+                let wlo = samples.partition_point(|s| s.timestamp_ms < st - range_ms);
+                let whi = samples.partition_point(|s| s.timestamp_ms <= st);
+                (wlo != whi).then(|| reduce_over_time_samples(kind, &samples[wlo..whi]))
+            })
+            .collect()
+    };
+    // Wide query (rollup over many series, e.g. double-groupby): a per-part scan
+    // opens each part once instead of once per series. Selective queries keep
+    // the per-series parallel read, which seeks straight to the few candidates.
+    let per_series: Vec<(Vec<u8>, Vec<Option<f64>>)> = if names.len() >= WIDE_SCAN_THRESHOLD {
+        let step_vals = match <S as QueryStore>::scan_series_map(storage, &names, window, roll) {
+            Ok(v) => v,
+            Err(e) => return Some(Err(EvalError::Storage(e.to_string()))),
+        };
+        names.into_iter().zip(step_vals).collect()
+    } else {
+        let r: Result<Vec<(Vec<u8>, Vec<Option<f64>>)>, EvalError> = names
+            .into_par_iter()
+            .map(|name| {
+                let samples = storage
+                    .search_by_metric_name(&name, window)
+                    .map_err(|e| EvalError::Storage(e.to_string()))?;
+                Ok((name, roll(&samples)))
+            })
+            .collect();
+        match r {
+            Ok(v) => v,
+            Err(e) => return Some(Err(e)),
+        }
     };
 
     let result: Vec<RangeVectorElement> = match agg {
