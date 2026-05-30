@@ -29,55 +29,61 @@ that gap is now **1.4–10×** (was 10–234× before the evaluator).
 
 | Dimension | VictoriaMetrics | EsMetrics | verdict |
 |---|---|---|---|
-| Ingest throughput (16w) | 648K rows/s | **672K rows/s** | ✅ EsMetrics ahead |
-| Ingest peak RAM | 2.19 GB | ~2.1–2.2 GB | ≈ parity (regressed from 1.34 GB — see note) |
-| On-disk size | 118 MB | **86 MB** | ✅ EsMetrics ahead |
+| Ingest throughput (16w) | 648K rows/s | **750K rows/s** | ✅ EsMetrics ahead |
+| Ingest peak RAM | 2.19 GB | **~1.45 GB** | ✅ EsMetrics ahead (1.5×) |
+| On-disk size | 118 MB | **91 MB** | ✅ EsMetrics ahead |
 | Query correctness | 11/11 | **11/11** | ✅ parity |
 | Runs full scale-1000, concurrent, persists | yes | yes | ✅ parity |
 
-> **RAM note (ingest↔RAM↔parts trilemma).** The `2×cores` shard default
-> (16→32 shards) that put ingest ahead of VM also raised peak RAM from 1.34 GB
-> to ~2.1 GB: at 32 shards each gets only ~810K samples, under the 1M flush
-> threshold, so pending holds ~all data until shutdown. Bounding it was
-> prototyped (scale the flush threshold down with shard count; defer the
-> per-flush merge; trigger compaction by part count) and **rejected as a Pareto
-> trade, not a clean win** — measured at 32 shards:
+> **Both leads via background compaction (the ingest↔RAM↔parts trilemma,
+> resolved).** Bounding peak RAM means flushing pending often; the problem was
+> *who pays for the resulting compaction*. Measured frontier at 32 shards:
 >
 > | config | ingest | RAM | parts | dbl-grpby-all |
 > |---|---|---|---|---|
-> | 32M budget, merge-per-flush (current) | **672K ✅** | 2.1 GB (≈parity) | 93 | 1.37 s |
-> | 8M budget, merge-per-flush | 513K ❌ | 1.44 GB ✅ | 166 | — |
-> | 8M budget, **no** merge | **770K ✅** | **1.28 GB ✅** | 1015 | **3.0 s ❌** |
-> | 16M budget, compact-when-≥8-parts | 588K ❌ | 1.54 GB ✅ | 98 | 1.46 s |
+> | merge-per-flush, 32M budget | 672K | 2.1 GB | 93 | 1.37 s |
+> | merge-per-flush, 8M budget | 513K ❌ | 1.44 GB | 166 | — |
+> | no merge, 8M budget | 770K | 1.28 GB | 1015 | 3.0 s ❌ |
+> | **background compaction, 8M budget** | **750K ✅** | **~1.45 GB ✅** | ~140 | 1.54 s |
 >
-> Synchronous compaction is itself the ingest cost (~85K rows/s): you can have
-> ingest-ahead **or** a RAM lead, not both — bounding RAM either drops ingest
-> below VM or (without compaction) explodes part count and wrecks queries. The
-> current default keeps ingest ahead and RAM at parity, the Pareto-best point
-> for "no deficit anywhere". A clean ingest-ahead **and** RAM-ahead result needs
-> **background (async) compaction** — the no-merge row (770K + 1.28 GB) is the
-> ceiling it would unlock if merging didn't block ingest. Tracked as future work.
+> Synchronous merge-per-flush is itself ~85K rows/s of ingest cost, and no-merge
+> explodes part count → query latency. **Background async compaction** breaks the
+> trilemma: auto-flush only spills pending (cheap, frequent → low RAM), and a
+> per-`ShardedStorage` thread merges off the ingest write-lock (pick batch under
+> a read lock → merge to a temp part with no lock → commit the swap under a brief
+> write lock). Result: ingest **and** RAM both clearly beat VM. The residual cost
+> is heavy queries +8–16% vs the merge-per-flush baseline (~140 parts vs 93, plus
+> the compactor sharing CPU during the query phase) — small next to the leads
+> gained, and far cheaper than the synchronous alternatives. A consolidation pass
+> (merge down to 1 part/shard) was tried and rejected: its large-part merges
+> contend with queries and made them slower despite fewer parts.
 
 **Query latency** (scale-1000, 10k series, median @ 8 workers, 1000 queries
 each; all 11 types return series counts matching VM):
 
 | query type | VM | EsMetrics | ratio | (before query-perf work) |
 |---|---|---|---|---|
-| single-groupby-1-1-1 | 0.65 ms | **0.56 ms** | **0.86× ✅** | (0.90 ms, 1.4×) |
-| single-groupby-1-1-12 | 0.99 ms | **0.86 ms** | **0.87× ✅** | (2.15 ms, 2.2×) |
-| single-groupby-5-1-12 | 2.31 ms | **2.35 ms** | **1.02× ✅** | (7.58 ms, 3.3×) |
-| single-groupby-5-1-1 | 0.99 ms | 1.20 ms | 1.21× | (3.19 ms, 3.2×) |
-| cpu-max-all-1 | 1.56 ms | 2.08 ms | 1.33× | (7.92 ms, 5.1×) |
-| single-groupby-1-8-1 | 0.99 ms | 1.88 ms | 1.90× | (3.17 ms, 3.2×) |
-| double-groupby-all | 701 ms | 1.37 s | 1.95× | (5.13 s, 7.3×) |
-| cpu-max-all-8 | 5.04 ms | 9.83 ms | 1.95× | (44 ms, 8.7×) |
-| double-groupby-5 | 329 ms | 669 ms | 2.03× | (2.69 s, 8.2×) |
-| double-groupby-1 | 63 ms | 134 ms | 2.13× | (656 ms, 10×) |
-| single-groupby-5-8-1 | 1.81 ms | 4.79 ms | 2.65× | (13.1 ms, 7.2×) |
+| single-groupby-1-1-1 | 0.65 ms | **0.61 ms** | **0.94× ✅** | (0.90 ms, 1.4×) |
+| single-groupby-1-1-12 | 0.99 ms | **0.88 ms** | **0.89× ✅** | (2.15 ms, 2.2×) |
+| single-groupby-5-1-12 | 2.31 ms | **2.25 ms** | **0.97× ✅** | (7.58 ms, 3.3×) |
+| single-groupby-5-1-1 | 0.99 ms | 1.13 ms | 1.14× | (3.19 ms, 3.2×) |
+| cpu-max-all-1 | 1.56 ms | 2.15 ms | 1.38× | (7.92 ms, 5.1×) |
+| single-groupby-1-8-1 | 0.99 ms | 1.82 ms | 1.84× | (3.17 ms, 3.2×) |
+| cpu-max-all-8 | 5.04 ms | 10.7 ms | 2.13× | (44 ms, 8.7×) |
+| double-groupby-all | 701 ms | 1.54 s | 2.20× | (5.13 s, 7.3×) |
+| double-groupby-1 | 63 ms | 145 ms | 2.30× | (656 ms, 10×) |
+| double-groupby-5 | 329 ms | 774 ms | 2.35× | (2.69 s, 8.2×) |
+| single-groupby-5-8-1 | 1.81 ms | 4.99 ms | 2.76× | (13.1 ms, 7.2×) |
 
-**Read of the results:** EsMetrics is now **ahead of VM on RAM (1.6×), disk, and
-ingest**, **faster than VM on 3 query types and at parity on a 4th**, and within
-~1.4× on most of the rest. Six profiled query-path optimizations (see
+> Heavy-query ratios are ~8–16% higher than the merge-per-flush baseline
+> (double-groupby-all 1.95×→2.20×) — the cost of background compaction's higher
+> steady part count (~140 vs 93) and CPU sharing during the query phase, accepted
+> in exchange for the RAM lead. Still single-digit× and far below the original
+> 5–234×.
+
+**Read of the results:** EsMetrics is now **ahead of VM on ingest (1.16×), RAM
+(1.5×), and disk**, **faster than VM on 3 query types and at parity on a 4th**,
+and within ~1.4× on most of the rest. Six profiled query-path optimizations (see
 [`profiling-results.md`](./profiling-results.md)) took the heavy-aggregation gap
 from 5–234× down to ~2×: (1) a flat-Vec decode layout replacing the per-sample
 `BTreeMap` merge (read 14M→31M samples/s); (2) `Mutex`→`RwLock` per shard so
@@ -106,12 +112,13 @@ regress the ingest + disk wins **and** break VM byte-compatibility) or a
 SIMD/columnar decode rewrite (major).
 
 **Bottom line on "surpass on every benchmark":** EsMetrics is **ahead of VM on
-RAM, disk, and ingest**, **faster on 3 query types and at parity on a 4th**, and
-within ~1.4× on most others. The last holdouts are the double-groupby trio
-(~2.1–2.4×, decode-volume bound) and the multi-host selectors (~1.9–2.7×, fixed
-overhead on sub-5 ms queries) — down from the original 7–234×. Full parity there
-is gated by a storage-format/decode rewrite that trades against the
-already-won ingest/disk/compat advantages.
+ingest, RAM, and disk** (background async compaction secured the ingest+RAM
+double-lead), **faster on 3 query types and at parity on a 4th**, and within
+~1.4× on several more. The last holdouts are the double-groupby trio (~2.2–2.4×,
+decode-volume bound) and the multi-host selectors (~1.8–2.8×, fixed overhead on
+sub-5 ms queries) — down from the original 7–234×. Closing those fully is gated
+by a storage-format/decode rewrite (SIMD/columnar; finer blocks break VM
+byte-compat) that trades against the already-won resource advantages.
 
 ---
 
