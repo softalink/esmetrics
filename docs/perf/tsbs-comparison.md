@@ -29,9 +29,9 @@ that gap is now **1.4–10×** (was 10–234× before the evaluator).
 
 | Dimension | VictoriaMetrics | EsMetrics | verdict |
 |---|---|---|---|
-| Ingest throughput (16w) | 648K rows/s | **750K rows/s** | ✅ EsMetrics ahead |
-| Ingest peak RAM | 2.19 GB | **~1.45 GB** | ✅ EsMetrics ahead (1.5×) |
-| On-disk size | 118 MB | **91 MB** | ✅ EsMetrics ahead |
+| Ingest throughput (16w) | 648K rows/s | **752K rows/s** | ✅ EsMetrics ahead |
+| Ingest peak RAM | 2.19 GB | **~1.40 GB** | ✅ EsMetrics ahead (1.6×) |
+| On-disk size | 118 MB | **92 MB** | ✅ EsMetrics ahead |
 | Query correctness | 11/11 | **11/11** | ✅ parity |
 | Runs full scale-1000, concurrent, persists | yes | yes | ✅ parity |
 
@@ -63,17 +63,17 @@ each; all 11 types return series counts matching VM):
 
 | query type | VM | EsMetrics | ratio | (before query-perf work) |
 |---|---|---|---|---|
-| single-groupby-1-1-1 | 0.65 ms | **0.61 ms** | **0.94× ✅** | (0.90 ms, 1.4×) |
-| single-groupby-1-1-12 | 0.99 ms | **0.88 ms** | **0.89× ✅** | (2.15 ms, 2.2×) |
-| single-groupby-5-1-12 | 2.31 ms | **2.25 ms** | **0.97× ✅** | (7.58 ms, 3.3×) |
+| single-groupby-1-1-1 | 0.65 ms | **0.52 ms** | **0.80× ✅** | (0.90 ms, 1.4×) |
+| single-groupby-1-1-12 | 0.99 ms | **0.89 ms** | **0.90× ✅** | (2.15 ms, 2.2×) |
+| single-groupby-5-1-12 | 2.31 ms | **2.22 ms** | **0.96× ✅** | (7.58 ms, 3.3×) |
 | single-groupby-5-1-1 | 0.99 ms | 1.13 ms | 1.14× | (3.19 ms, 3.2×) |
-| cpu-max-all-1 | 1.56 ms | 2.15 ms | 1.38× | (7.92 ms, 5.1×) |
-| single-groupby-1-8-1 | 0.99 ms | 1.82 ms | 1.84× | (3.17 ms, 3.2×) |
-| cpu-max-all-8 | 5.04 ms | 10.7 ms | 2.13× | (44 ms, 8.7×) |
-| double-groupby-all | 701 ms | 1.54 s | 2.20× | (5.13 s, 7.3×) |
-| double-groupby-1 | 63 ms | 145 ms | 2.30× | (656 ms, 10×) |
-| double-groupby-5 | 329 ms | 774 ms | 2.35× | (2.69 s, 8.2×) |
-| single-groupby-5-8-1 | 1.81 ms | 4.99 ms | 2.76× | (13.1 ms, 7.2×) |
+| cpu-max-all-1 | 1.56 ms | 2.03 ms | 1.30× | (7.92 ms, 5.1×) |
+| single-groupby-1-8-1 | 0.99 ms | 1.77 ms | 1.79× | (3.17 ms, 3.2×) |
+| cpu-max-all-8 | 5.04 ms | 10.6 ms | 2.11× | (44 ms, 8.7×) |
+| double-groupby-all | 701 ms | 1.56 s | 2.22× | (5.13 s, 7.3×) |
+| double-groupby-1 | 63 ms | 144 ms | 2.29× | (656 ms, 10×) |
+| double-groupby-5 | 329 ms | 781 ms | 2.37× | (2.69 s, 8.2×) |
+| single-groupby-5-8-1 | 1.81 ms | 4.86 ms | 2.69× | (13.1 ms, 7.2×) |
 
 > Heavy-query ratios are ~8–16% higher than the merge-per-flush baseline
 > (double-groupby-all 1.95×→2.20×) — the cost of background compaction's higher
