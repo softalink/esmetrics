@@ -434,8 +434,13 @@ fn try_single_pass<S: QueryStore + Sync>(
                 .into_par_iter()
                 .filter_map(|(key, members)| {
                     let mut values: Vec<(i64, f64)> = Vec::new();
+                    // Reuse one scratch buffer across all steps (clear keeps
+                    // capacity) instead of allocating a `Vec<f64>` per step —
+                    // for grouped rollups that is one alloc per (step, group).
+                    // Reduction order is unchanged, so results are bit-identical.
+                    let mut vals: Vec<f64> = Vec::with_capacity(members.len());
                     for (si, &t) in steps.iter().enumerate() {
-                        let mut vals: Vec<f64> = Vec::with_capacity(members.len());
+                        vals.clear();
                         for &m in &members {
                             if let Some(v) = per_series[m].1[si] {
                                 vals.push(v);
