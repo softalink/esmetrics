@@ -40,16 +40,17 @@ open+seek is ~9.5 µs/series — ~8 % of read with one part, but ~30 %+ with the
 isolated) and comparable to VM's scalar decode.
 
 **Direct measurement of the lever** (`scan_compare.rs`, 1000 series, 6
-time-disjoint parts, 12 h window — the double-groupby shape):
+time-disjoint parts, 12 h window — the double-groupby shape, single-threaded):
 
 | read strategy | time/iter |
 |---|---|
-| per-series (current) | 78.2 ms |
-| **per-part scan (VM-style)** | **36.7 ms** |
-| **speedup** | **2.13×** |
+| per-series (current) | ~191 ms |
+| **per-part scan (VM-style)** | **~44 ms** |
+| **speedup** | **~4.3×** |
 
-A per-part scan is **2.13× faster** on the exact workload where we trail VM by
-2.2×. This is the lever.
+A per-part scan is **~4.3× faster** on the exact workload where we trail VM by
+2.2× — it eliminates the redundant per-series part opens/seeks (each of the 1000
+series re-opened the same overlapping parts). This is the lever.
 
 ## The plan
 

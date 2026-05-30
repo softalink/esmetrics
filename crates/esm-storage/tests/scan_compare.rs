@@ -66,7 +66,7 @@ fn scan_compare() {
         .map(|e| e.path())
         .filter(|p| p.is_dir())
         .collect();
-    eprintln!("{} series, {} parts, 12h window", SERIES, part_paths.len());
+    eprintln!("{SERIES} series, {} parts, 12h window", part_paths.len());
 
     let iters = 10u32;
     // warm
