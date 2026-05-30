@@ -123,7 +123,7 @@ fn scan_compare() {
     let per_part = t.elapsed();
 
     let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0 / f64::from(iters);
-    eprintln!("returned ~{} samples/iter", got);
+    eprintln!("returned ~{got} samples/iter");
     eprintln!("(A) per-series search : {:.1} ms/iter  [sink={sink_a}]", ms(per_series));
     eprintln!("(B) per-part scan     : {:.1} ms/iter  [sink={sink_b}]", ms(per_part));
     eprintln!("    speedup (A/B) = {:.2}x", ms(per_series) / ms(per_part));
