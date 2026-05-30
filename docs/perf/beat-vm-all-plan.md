@@ -171,3 +171,54 @@ trail at 8. I'd rather flag that now than promise a clean sweep and miss.
 - `cargo test -p esm-storage --release --test read_path_split -- --ignored --nocapture`
 - end-to-end: `../tsbs-bench/run-e2e-lever1.sh` + `run-correctness5.sh` + `compare_json5.py`
 </content>
+
+---
+
+## I1 (hash-once) — MEASURED, design verified, ready to implement (2026-05-30)
+
+**Decisive measurement** (`crates/esm-storage/tests/ingest_hash_split.rs`, commit `ee6876e`,
+TSBS key shape: 10k keys, avg 183 B, steady state):
+
+| step | ns/sample |
+|---|--:|
+| hash full key ×2 (today: shard_idx + name_to_tsid) | 239 |
+| hash full key ×1 (hash-once ceiling) | 122 |
+| hash 24-byte tsid (pending probe) | 4 |
+| 2 map probes + push | 183 |
+| FULL current buffer path (E) | 289 |
+
+**Removing the duplicate full-key hash saves ~117 ns = ~41% of the buffer path** —
+NOT the ~15% the old profiling-results.md estimated when it deferred this. Buffer is
+~65% of ingest ⇒ **~26% end-to-end: ~330K → ~420K rows/s @8w.** Real, biggest safe
+lever. Still short of VM ~640K@8w (that needs I2). **This supersedes the "Lever 1
+deferred" note in profiling-results.md.**
+
+### Verified implementation design (no blockers found)
+- `hashbrown` 0.15.5 is already in Cargo.lock (transitive) + cached → builds offline.
+  Its `raw-entry` feature is on by default; `raw_entry_mut().from_key_hashed_nocheck(hash, &key)`
+  (src/raw_entry.rs:558) lets us supply a precomputed hash AND custom equality,
+  bypassing `Hash for Vec<u8>`.
+- Make `shard_idx` return the FNV `u64` it already computes (currently discarded after
+  `% nshards`). Thread it: `ingest`/`ingest_keyed` route loop → `*_subset`/`*_selected`
+  → `buffer_one(name, hash, ts, v)` → `get_or_create_tsid(name, hash)`.
+- Switch `name_to_tsid` to `hashbrown::HashMap<Vec<u8>, Tsid>` (API-superset; the ~10
+  cold callers — keys/iter/insert/get/entry/len — compile unchanged). Hot path uses
+  `from_key_hashed_nocheck`. CRITICAL: the supplied hash (raw-byte FNV from shard_idx)
+  must equal what the map would compute, so give the map a `BuildHasher` that FNV-hashes
+  raw bytes only (matches shard_idx) — i.e. reuse the existing FnvHasher but ensure the
+  probe path uses the precomputed value; equality closure is `|k| k == name`.
+- Leave the pending (tsid-keyed) map alone (4 ns).
+- Non-keyed paths (`ingest`, `ingest_selected`, used by prom-remote-write etc.) compute
+  the hash inline before buffer_one — same one-hash total.
+
+### Risk + guards
+Multi-file hot-path change (sharded.rs + storage.rs). Guard: all esm-storage tests
+(esp. `scan_series_map_matches_per_series`, ingest/query roundtrip), `profile_ingest`
+before/after (expect buffer ~289→~200 ns/sample, ~2.0→~3.0M/s warm), full e2e
+ingest@8w + value-parity (all 11 MATCH) + RAM must not regress. Apply via one atomic
+Python script with per-anchor assertions (lag-hardened).
+
+### Then I2 (two-level interning) — still the only path to actually beat VM ingest @8w
+Intern the shared per-line tag suffix once → `(field_id, tagset_id)` small key. Removes
+the remaining full-key hash entirely. Invasive (parser + key scheme + index + query
+lookups). Do only after I1 lands and is measured.
