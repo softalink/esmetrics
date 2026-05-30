@@ -1073,6 +1073,9 @@ async fn promql_range(
     if step_ms <= 0 {
         return Err(AppError(anyhow::anyhow!("step must be > 0")));
     }
+    // Align the step grid to step multiples exactly as VictoriaMetrics does
+    // (AdjustStartEnd), so range-query timestamps match VM byte-for-byte.
+    let (start_ms, end_ms) = adjust_start_end(start_ms, end_ms, step_ms);
     // Read-only queries take a shared read lock so they run concurrently; only
     // the optional explicit flush needs the exclusive write lock.
     if params.flush {
@@ -1099,6 +1102,33 @@ async fn promql_range(
         })
         .collect();
     Ok(Json(RangeEnvelope { status: "success", data: RangeData { result_type: "matrix", result } }))
+}
+
+/// VictoriaMetrics `AdjustStartEnd`: round `start` down and `end` up to a
+/// multiple of `step` so range-query results align to VM's cache grid (and
+/// thus match VM's returned timestamps). No-op for queries with fewer than
+/// 50 points (VM's `minTimeseriesPointsForTimeRounding`). All args in ms.
+fn adjust_start_end(start_ms: i64, end_ms: i64, step_ms: i64) -> (i64, i64) {
+    if step_ms <= 0 {
+        return (start_ms, end_ms);
+    }
+    let points = (end_ms - start_ms) / step_ms + 1;
+    if points < 50 {
+        return (start_ms, end_ms);
+    }
+    let start = start_ms - start_ms.rem_euclid(step_ms);
+    let adjust = end_ms.rem_euclid(step_ms);
+    let mut end = end_ms;
+    if adjust > 0 {
+        end += step_ms - adjust;
+    }
+    // Preserve the original point count (VM trims the end if rounding added one).
+    let mut new_points = (end - start) / step_ms + 1;
+    while new_points > points {
+        end -= step_ms;
+        new_points -= 1;
+    }
+    (start, end)
 }
 
 fn seconds_to_ms(sec: f64) -> i64 {
@@ -1291,5 +1321,27 @@ impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
         tracing::warn!(error = %self.0, "request failed");
         (StatusCode::BAD_REQUEST, format!("error: {}", self.0)).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::adjust_start_end;
+
+    #[test]
+    fn adjust_start_end_matches_vm() {
+        // >= 50 points: align start down, end up, then trim end to keep the
+        // point count (TSBS single-groupby-1-1-1, step 60s, 61 points).
+        assert_eq!(
+            adjust_start_end(1_704_145_104_000, 1_704_148_704_000, 60_000),
+            (1_704_145_080_000, 1_704_148_680_000)
+        );
+        // < 50 points: left unchanged (TSBS double-groupby, step 3600s, 13 points).
+        assert_eq!(
+            adjust_start_end(1_704_194_560_000, 1_704_237_760_000, 3_600_000),
+            (1_704_194_560_000, 1_704_237_760_000)
+        );
+        // already aligned stays put.
+        assert_eq!(adjust_start_end(0, 6_000_000, 60_000), (0, 6_000_000));
     }
 }

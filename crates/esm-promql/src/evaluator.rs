@@ -1399,7 +1399,7 @@ where
         .filter(|n| matches_selector(n, &bare))
         .collect();
 
-    let window_start = ctx.timestamp_ms - range_ms;
+    let window_start = ctx.timestamp_ms - range_ms + 1;
     let window_end = ctx.timestamp_ms;
     let mut out = Vec::new();
     for name in candidate_names {
@@ -1471,7 +1471,7 @@ fn evaluate_absent_over_time(
                 .search_by_metric_name(
                     &n,
                     TimeRange {
-                        min_timestamp_ms: ctx.timestamp_ms - range_ms,
+                        min_timestamp_ms: ctx.timestamp_ms - range_ms + 1,
                         max_timestamp_ms: ctx.timestamp_ms,
                     },
                 )
@@ -2179,7 +2179,7 @@ where
             .search_by_metric_name(
                 &name,
                 TimeRange {
-                    min_timestamp_ms: ctx.timestamp_ms - range_ms,
+                    min_timestamp_ms: ctx.timestamp_ms - range_ms + 1,
                     max_timestamp_ms: ctx.timestamp_ms,
                 },
             )
@@ -2250,7 +2250,7 @@ fn evaluate_rate_like(
             .collect()
     };
 
-    let window_start = ctx.timestamp_ms - range_ms;
+    let window_start = ctx.timestamp_ms - range_ms + 1;
     let window_end = ctx.timestamp_ms;
     let mut out: Vec<InstantVectorElement> = Vec::new();
     for name in candidate_names {
