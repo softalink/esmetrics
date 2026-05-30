@@ -294,7 +294,14 @@ fn over_time_kind(name: &str) -> Option<OverTimeKind> {
 /// Candidate count at or above which `try_single_pass` switches from the
 /// per-series parallel read to a per-part scan (opening each overlapping
 /// part once); below it, selective queries seek straight to their few series.
-const WIDE_SCAN_THRESHOLD: usize = 256;
+///
+/// Set from the `selective_scan_compare` microbench: the per-part scan is
+/// faster (or, for candidates scattered one-per-shard, no worse) than the
+/// per-series path from very low candidate counts up. A small threshold keeps
+/// genuinely single-series lookups on the direct seek path while routing
+/// multi-host selectors (single-groupby-*-8-1, cpu-max-all-8: 8–80 series)
+/// through the scan, where per-series redundantly re-opens each shard's parts.
+const WIDE_SCAN_THRESHOLD: usize = 8;
 
 /// Single-pass fast path for `[agg(]rollup_over_time(selector[range])[)]`.
 ///
