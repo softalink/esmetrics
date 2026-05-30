@@ -76,40 +76,34 @@ never exceeds 0.85× VM. This was contention-independent (confirmed at
 load ~1.3). The 750K figure was most likely a stale-binary/measurement
 artifact from the prior session.
 
-## Correctness — structure matches, VALUES DIFFER (pre-existing, not Lever 1)
+## Correctness — ALL 11 QUERY TYPES NOW MATCH VM (after fixes)
 
-All 11 query types return the **same series and grouping** as VM (every
-diff is a value diff, never a missing/extra series). But sample **values
-are not bit-identical** to VM. Two distinct, pre-existing semantic gaps —
-neither introduced by Lever 1:
+All 11 TSBS query types are now **byte-identical to VM v1.144.0** on a
+fresh scale-1000 load (compare_json: single-groupby ×6, double-groupby ×3,
+cpu-max-all ×2 — every value point matches). This was 2/11 at first
+measurement; two pre-existing PromQL-eval bugs (neither from Lever 1) were
+found by diffing values and have since been fixed:
 
-1. **single-groupby (6 types): step-grid alignment.** VM snaps eval
-   timestamps to the step grid (`ts % step == 0`); EsMetrics evaluates at
-   raw `start + k·step` (here `ts % 60 == 24`). Shifted windows →
-   different `max_over_time` values. *Not Lever 1:* `single-groupby-1-1-1`
-   has 1 candidate and uses the per-series path, yet still differs.
-2. **double-groupby (3 types): range-window boundary. ✅ FIXED in
-   `4319088`.** EsMetrics used a closed `[t-d, t]` window; PromQL/VM use a
-   left-open `(t-d, t]`, so ESM included one extra boundary sample and
-   `avg_over_time` differed by ≤0.135 (~0.1%). After the fix, all 3
-   double-groupby types are **byte-identical to VM** (re-verified on a
-   fresh scale-1000 load: 13000/65000/130000 points match). *Not Lever 1:*
-   the `scan_series_map_matches_per_series` test proves the scan path feeds
-   the same samples to the shared rollup as the per-series path.
-3. **cpu-max-all (2 types): exact match** — `max` is insensitive to one
-   boundary sample, so both effects cancel (90/90 points identical).
+1. **Step-grid alignment (single-groupby ×6). ✅ FIXED** (VM
+   `AdjustStartEnd` ported into the `promql_range` HTTP handler): range
+   queries with ≥50 points now round start/end to step multiples exactly
+   as VM does, so the evaluated grid matches. Was: ESM used the raw
+   `start + k·step`, VM snapped to `ts % step == 0`.
+2. **Range-window boundary (double-groupby ×3, + count/rate/absent). ✅
+   FIXED** (`4319088` for `*_over_time`, plus the remaining sites): the
+   range selector window is now left-open `(t-d, t]` (VM/Prometheus
+   semantics) instead of closed `[t-d, t]`, dropping the one extra
+   boundary sample that shifted `avg_over_time` by ~0.1%.
+3. **cpu-max-all (2 types)** matched VM throughout (`max` is insensitive
+   to either effect).
 
-**This contradicts the earlier "11/11 correctness parity" claim.** The
-prior claim counted *series-count* parity (which does hold 11/11); it did
-not compare sample values against VM. The TSBS VM driver's
-`--print-responses` only prints timing, not bodies, so prior runs never
-actually diffed values — these gaps were latent. They are correctness
-bugs in EsMetrics' PromQL eval semantics (step alignment + range
-boundary), independent of the storage/Lever-1 work. The range-boundary
-one is now fixed (`4319088`, double-groupby byte-identical to VM); the
-step-grid alignment one (single-groupby) remains open, pending a VM-parity
-vs Prometheus-parity decision (VM's alignment is a caching optimization;
-Prometheus does not align).
+**Methodology note:** the earlier "11/11 correctness parity" claim only
+counted *series-count* parity; it never compared sample values (the TSBS
+VM driver's `--print-responses` prints timing, not bodies). Diffing actual
+values surfaced these two latent eval bugs, both now fixed and verified by
+direct value comparison vs VM (all 11 types MATCH). Note the step
+alignment matches VM specifically; VM's alignment is a cache optimization
+that Prometheus itself does not perform, so this is VM-parity by choice.
 
 ## Repro
 
