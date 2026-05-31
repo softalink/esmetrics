@@ -266,7 +266,7 @@ pub struct Storage {
     /// `metric_name (raw bytes) -> Tsid`. Populated lazily as new metrics
     /// arrive. Persisted to a sidecar file in Phase 1D; for now we treat the
     /// mapping as ephemeral and recompute on each open from on-disk parts.
-    name_to_tsid: FnvHashMap<Vec<u8>, Tsid>,
+    name_to_tsid: hashbrown::HashMap<Vec<u8>, Tsid, FnvBuild>,
     /// Reverse mapping for query results.
     tsid_to_name: HashMap<Tsid, Vec<u8>>,
 
@@ -346,6 +346,18 @@ impl std::hash::Hasher for FnvHasher {
 type FnvBuild = std::hash::BuildHasherDefault<FnvHasher>;
 type FnvHashMap<K, V> = HashMap<K, V, FnvBuild>;
 
+/// Hash a metric-name key with the same `BuildHasher` that `name_to_tsid` uses,
+/// so a single precomputed value serves both shard routing and the per-shard
+/// `name_to_tsid` probe (`Storage::get_or_create_tsid_hashed`). `hash_one(&[u8])`
+/// and the map's rehash of its stored `Vec<u8>` both reduce to `<[u8] as Hash>`
+/// over the same bytes, so the values are equal — required for
+/// `raw_entry`'s `from_key_hashed_nocheck`.
+#[must_use]
+pub fn key_hash(name: &[u8]) -> u64 {
+    use std::hash::BuildHasher;
+    FnvBuild::default().hash_one(name)
+}
+
 /// The metric-name part of a full series key: the bytes before the first `{`.
 fn metric_name_part(key: &[u8]) -> &[u8] {
     match key.iter().position(|&b| b == b'{') {
@@ -395,7 +407,7 @@ impl Storage {
         let mut storage = Self {
             data_dir,
             _lock: lock,
-            name_to_tsid: FnvHashMap::default(),
+            name_to_tsid: hashbrown::HashMap::with_hasher(FnvBuild::default()),
             tsid_to_name: HashMap::new(),
             next_metric_id: 1,
             pending: FnvHashMap::default(),
@@ -679,8 +691,36 @@ impl Storage {
         self.after_ingest(indices.len())
     }
 
+    /// As [`Self::ingest_keyed_subset`] but with each entry's key hash supplied
+    /// by the sharded router (`hashes[i]` is the hash of `entries[i]`'s key), so
+    /// the key is hashed once per sample for routing + interning combined.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] if a triggered flush fails.
+    pub fn ingest_keyed_subset_hashed(
+        &mut self,
+        arena: &[u8],
+        entries: &[KeyedEntry],
+        indices: &[usize],
+        hashes: &[u64],
+    ) -> Result<(), StorageError> {
+        for &i in indices {
+            let (range, timestamp_ms, value) = &entries[i];
+            self.buffer_one_hashed(&arena[range.clone()], hashes[i], *timestamp_ms, *value);
+        }
+        self.after_ingest(indices.len())
+    }
+
     fn buffer_one(&mut self, name: &[u8], timestamp_ms: i64, value: i64) {
-        let tsid = self.get_or_create_tsid(name);
+        let h = key_hash(name);
+        self.buffer_one_hashed(name, h, timestamp_ms, value);
+    }
+
+    /// As [`Self::buffer_one`] with the key hash precomputed by the caller (the
+    /// sharded router already hashed the key to choose a shard), so the
+    /// per-sample full-key hash is paid once instead of twice.
+    fn buffer_one_hashed(&mut self, name: &[u8], hash: u64, timestamp_ms: i64, value: i64) {
+        let tsid = self.get_or_create_tsid_hashed(name, hash);
         self.pending.entry(tsid).or_default().push((timestamp_ms, value));
     }
 
@@ -720,17 +760,28 @@ impl Storage {
     }
 
     fn get_or_create_tsid(&mut self, name: &[u8]) -> Tsid {
-        if let Some(t) = self.name_to_tsid.get(name) {
-            return *t;
+        let h = key_hash(name);
+        self.get_or_create_tsid_hashed(name, h)
+    }
+
+    /// Intern `name` using a precomputed `hash` (must equal [`key_hash`]`(name)`),
+    /// probing `name_to_tsid` via hashbrown's `raw_entry` so the hot path does
+    /// not rehash the full key.
+    fn get_or_create_tsid_hashed(&mut self, name: &[u8], hash: u64) -> Tsid {
+        use hashbrown::hash_map::RawEntryMut;
+        match self.name_to_tsid.raw_entry_mut().from_key_hashed_nocheck(hash, name) {
+            RawEntryMut::Occupied(e) => *e.get(),
+            RawEntryMut::Vacant(e) => {
+                let metric_id = self.next_metric_id;
+                self.next_metric_id += 1;
+                let tsid = Tsid { metric_id, ..Default::default() };
+                e.insert_hashed_nocheck(hash, name.to_vec(), tsid);
+                self.tsid_to_name.insert(tsid, name.to_vec());
+                self.index_series_key(name);
+                self.index_dirty = true;
+                tsid
+            }
         }
-        let metric_id = self.next_metric_id;
-        self.next_metric_id += 1;
-        let tsid = Tsid { metric_id, ..Default::default() };
-        self.name_to_tsid.insert(name.to_vec(), tsid);
-        self.tsid_to_name.insert(tsid, name.to_vec());
-        self.index_series_key(name);
-        self.index_dirty = true;
-        tsid
     }
 
     /// Full series keys whose metric-name part equals `name_part`. Empty if

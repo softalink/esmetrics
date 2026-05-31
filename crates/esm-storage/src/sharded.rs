@@ -154,11 +154,12 @@ impl ShardedStorage {
     /// across restarts (unlike `HashMap`'s randomized hasher), so routing is
     /// stable for the lifetime of the on-disk data.
     fn shard_idx(&self, name: &[u8]) -> usize {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for &b in name {
-            h ^= u64::from(b);
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }
+        self.shard_of_hash(crate::storage::key_hash(name))
+    }
+
+    /// Map a precomputed key hash to a shard index. Same hash the per-shard
+    /// `name_to_tsid` probe uses, so it is computed once per sample and reused.
+    fn shard_of_hash(&self, h: u64) -> usize {
         usize::try_from(h % self.shards.len() as u64).unwrap_or(0)
     }
 
@@ -194,13 +195,19 @@ impl ShardedStorage {
         if self.shards.len() == 1 {
             return write_guard(&self.shards[0]).ingest_keyed(arena, entries);
         }
+        // Hash each key ONCE; reuse for routing and the per-shard name->tsid probe.
+        let hashes: Vec<u64> = entries
+            .iter()
+            .map(|(range, _, _)| crate::storage::key_hash(&arena[range.clone()]))
+            .collect();
         let mut buckets: Vec<Vec<usize>> = (0..self.shards.len()).map(|_| Vec::new()).collect();
-        for (i, (range, _, _)) in entries.iter().enumerate() {
-            buckets[self.shard_idx(&arena[range.clone()])].push(i);
+        for (i, &h) in hashes.iter().enumerate() {
+            buckets[self.shard_of_hash(h)].push(i);
         }
         for (shard, indices) in buckets.into_iter().enumerate() {
             if !indices.is_empty() {
-                write_guard(&self.shards[shard]).ingest_keyed_subset(arena, entries, &indices)?;
+                write_guard(&self.shards[shard])
+                    .ingest_keyed_subset_hashed(arena, entries, &indices, &hashes)?;
             }
         }
         Ok(())
