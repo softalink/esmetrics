@@ -1,3 +1,4 @@
+#![allow(clippy::used_underscore_binding)]
 //! Ingest buffer-path cost decomposition (measurement only; no production code
 //! touched). The profiler shows buffer-ingest is ~65% of ingest at ~2.0M
 //! samples/s (~500 ns/sample). This splits that budget into its parts —
