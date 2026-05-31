@@ -222,3 +222,22 @@ Python script with per-anchor assertions (lag-hardened).
 Intern the shared per-line tag suffix once → `(field_id, tagset_id)` small key. Removes
 the remaining full-key hash entirely. Invasive (parser + key scheme + index + query
 lookups). Do only after I1 lands and is measured.
+
+---
+
+## I1 — ✅ LANDED & VERIFIED (commit `4e8fb1c`, pushed)
+
+Implemented exactly as designed. Measured end-to-end (scale-1000, 8 workers, fresh load):
+- **ingest 330K → 455K rows/s (+38%)**; VM 637K ⇒ **0.52× → 0.71× VM**.
+- in-process buffer phase 2.0M → 3.07M samples/s (+53%).
+- **peak RSS 1.9 GB (< VM 2.10) and disk 89 MB (< 122) leads preserved.**
+- query latencies unchanged; **ALL 11 TSBS query types still byte-identical to VM**
+  (compare_json5); 73 esm-storage + 36 esm-promql tests pass; clippy/fmt clean.
+
+The hashbrown `raw_entry` hash-match held across the full dataset — the correctness
+risk (precomputed hash ≠ map's rehash → duplicate tsids) did not materialize because
+`key_hash` uses the map's own `FnvBuild`.
+
+**Ingest now 0.71× VM @8w — still behind. Only I2 (two-level tag-suffix interning)
+removes the remaining full-key hash to close it.** I2 stays the invasive parser+index
+rewrite; do it as its own scoped, measured effort.
