@@ -225,14 +225,14 @@ lookups). Do only after I1 lands and is measured.
 
 ---
 
-## I1 — ✅ LANDED & VERIFIED (commit `4e8fb1c`, pushed)
+## I1 — ✅ LANDED & VERIFIED (commits `66475a5`/`ac584e9`/`48f1c8e`, pushed)
 
 Implemented exactly as designed. Measured end-to-end (scale-1000, 8 workers, fresh load):
-- **ingest 330K → 455K rows/s (+38%)**; VM 637K ⇒ **0.52× → 0.71× VM**.
+- **ingest 330K → 379K rows/s** (measured e2e; VM 625K ⇒ **0.52× → 0.61× VM**). The earlier +38%/455K/0.71× was a pre-run estimate, not the measured number.
 - in-process buffer phase 2.0M → 3.07M samples/s (+53%).
 - **peak RSS 1.9 GB (< VM 2.10) and disk 89 MB (< 122) leads preserved.**
 - query latencies unchanged; **ALL 11 TSBS query types still byte-identical to VM**
-  (compare_json5); 73 esm-storage + 36 esm-promql tests pass; clippy/fmt clean.
+  (compare_json5); 72 esm-storage + 36 esm-promql tests pass. NOTE: `66475a5` shipped a clippy `-D dead_code` regression (unused `get_or_create_tsid`), then a `used_underscore_binding` pedantic error in the ingest_hash_split test; both fixed in `48f1c8e` + follow-up. The original "clippy/fmt clean" claim was wrong.
 
 The hashbrown `raw_entry` hash-match held across the full dataset — the correctness
 risk (precomputed hash ≠ map's rehash → duplicate tsids) did not materialize because
