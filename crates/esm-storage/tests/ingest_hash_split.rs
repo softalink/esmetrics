@@ -47,8 +47,16 @@ fn fnv(bytes: &[u8]) -> u64 {
 fn build_keys() -> Vec<Vec<u8>> {
     const HOSTS: usize = 1000;
     const FIELDS: [&str; 10] = [
-        "usage_user", "usage_system", "usage_idle", "usage_nice", "usage_iowait", "usage_irq",
-        "usage_softirq", "usage_steal", "usage_guest", "usage_guest_nice",
+        "usage_user",
+        "usage_system",
+        "usage_idle",
+        "usage_nice",
+        "usage_iowait",
+        "usage_irq",
+        "usage_softirq",
+        "usage_steal",
+        "usage_guest",
+        "usage_guest_nice",
     ];
     let mut keys = Vec::with_capacity(HOSTS * FIELDS.len());
     for h in 0..HOSTS {
@@ -144,9 +152,21 @@ fn ingest_hash_split() {
         v.clear();
     }
 
-    eprintln!("(A) hash full key x2     : {:>7.1} ns/sample  [{:.1} ms]", nsps(d_hash2), ms(d_hash2));
-    eprintln!("(B) hash full key x1     : {:>7.1} ns/sample  [{:.1} ms]", nsps(d_hash1), ms(d_hash1));
-    eprintln!("(C) hash 8-byte tsid     : {:>7.1} ns/sample  [{:.1} ms]", nsps(d_hashtsid), ms(d_hashtsid));
+    eprintln!(
+        "(A) hash full key x2     : {:>7.1} ns/sample  [{:.1} ms]",
+        nsps(d_hash2),
+        ms(d_hash2)
+    );
+    eprintln!(
+        "(B) hash full key x1     : {:>7.1} ns/sample  [{:.1} ms]",
+        nsps(d_hash1),
+        ms(d_hash1)
+    );
+    eprintln!(
+        "(C) hash 8-byte tsid     : {:>7.1} ns/sample  [{:.1} ms]",
+        nsps(d_hashtsid),
+        ms(d_hashtsid)
+    );
     eprintln!("(D) 2 map probes + push  : {:>7.1} ns/sample  [{:.1} ms]", nsps(d_maps), ms(d_maps));
     eprintln!("(E) FULL current path    : {:>7.1} ns/sample  [{:.1} ms]", nsps(d_full), ms(d_full));
     eprintln!();

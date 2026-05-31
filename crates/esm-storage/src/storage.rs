@@ -759,11 +759,6 @@ impl Storage {
         &self.parts_dir
     }
 
-    fn get_or_create_tsid(&mut self, name: &[u8]) -> Tsid {
-        let h = key_hash(name);
-        self.get_or_create_tsid_hashed(name, h)
-    }
-
     /// Intern `name` using a precomputed `hash` (must equal [`key_hash`]`(name)`),
     /// probing `name_to_tsid` via hashbrown's `raw_entry` so the hot path does
     /// not rehash the full key.
