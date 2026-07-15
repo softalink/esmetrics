@@ -3,6 +3,11 @@ name: Release
 on:
   push:
     tags: ["v1.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and attach artifacts to (e.g. v1.146.0)"
+        required: true
 
 permissions:
   contents: write
@@ -11,105 +16,66 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build-linux:
-    name: Build (Linux x86_64)
-    runs-on: ubuntu-latest
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            os: ubuntu-latest
+          - name: windows-amd64
+            os: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Build
-        run: cargo build --release -p esmetrics
-      - name: Package
-        run: |
-          STAGE=esmetrics-${GITHUB_REF_NAME}-linux-amd64
-          mkdir -p "$STAGE"
-          cp target/release/esmetrics LICENSE NOTICE README.md "$STAGE/"
-          tar czf "$STAGE.tar.gz" "$STAGE"
-          sha256sum "$STAGE.tar.gz" > "$STAGE.tar.gz.sha256"
-      - uses: actions/upload-artifact@v4
         with:
-          name: linux-amd64
-          path: |
-            esmetrics-*-linux-amd64.tar.gz
-            esmetrics-*-linux-amd64.tar.gz.sha256
-
-  build-windows:
-    name: Build (Windows x86_64, MSVC)
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
+          ref: ${{ github.event.inputs.tag || github.ref }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Build
-        run: cargo build --release -p esmetrics
-      - name: Package
+
+      - name: Build all release binaries
+        run: cargo build --release --workspace --bins
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          for b in esmetrics esmagent esmalert esmalert-tool esmauth esmctl esbackup esrestore; do
+            STAGE="$b-$TAG-linux-amd64"
+            mkdir -p "$STAGE"
+            cp "target/release/$b" LICENSE NOTICE README.md "$STAGE/"
+            tar czf "$STAGE.tar.gz" "$STAGE"
+            sha256sum "$STAGE.tar.gz" > "$STAGE.tar.gz.sha256"
+          done
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $stage = "esmetrics-$env:GITHUB_REF_NAME-windows-amd64"
-          New-Item -ItemType Directory -Path $stage | Out-Null
-          Copy-Item target/release/esmetrics.exe, LICENSE, NOTICE, README.md $stage/
-          Compress-Archive -Path $stage -DestinationPath "$stage.zip"
-          (Get-FileHash "$stage.zip" -Algorithm SHA256).Hash.ToLower() + "  $stage.zip" `
-            | Out-File -Encoding ascii "$stage.zip.sha256"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-amd64
-          path: |
-            esmetrics-*-windows-amd64.zip
-            esmetrics-*-windows-amd64.zip.sha256
+          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
+          foreach ($b in 'esmetrics','esmagent','esmalert','esmalert-tool','esmauth','esmctl','esbackup','esrestore') {
+            $stage = "$b-$tag-windows-amd64"
+            New-Item -ItemType Directory -Path $stage | Out-Null
+            Copy-Item "target/release/$b.exe", LICENSE, NOTICE, README.md $stage/
+            Compress-Archive -Path $stage -DestinationPath "$stage.zip"
+            (Get-FileHash "$stage.zip" -Algorithm SHA256).Hash.ToLower() + "  $stage.zip" `
+              | Out-File -Encoding ascii "$stage.zip.sha256"
+          }
 
-  build-linux-esmauth:
-    name: Build esmauth (Linux x86_64)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Build
-        run: cargo build --release -p esmauth
-      - name: Package
-        run: |
-          STAGE=esmauth-${GITHUB_REF_NAME}-linux-amd64
-          mkdir -p "$STAGE"
-          cp target/release/esmauth LICENSE NOTICE README.md "$STAGE/"
-          tar czf "$STAGE.tar.gz" "$STAGE"
-          sha256sum "$STAGE.tar.gz" > "$STAGE.tar.gz.sha256"
       - uses: actions/upload-artifact@v4
         with:
-          name: linux-amd64-esmauth
+          name: ${{ matrix.name }}
+          if-no-files-found: error
           path: |
-            esmauth-*-linux-amd64.tar.gz
-            esmauth-*-linux-amd64.tar.gz.sha256
-
-  build-windows-esmauth:
-    name: Build esmauth (Windows x86_64, MSVC)
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Build
-        run: cargo build --release -p esmauth
-      - name: Package
-        shell: pwsh
-        run: |
-          $stage = "esmauth-$env:GITHUB_REF_NAME-windows-amd64"
-          New-Item -ItemType Directory -Path $stage | Out-Null
-          Copy-Item target/release/esmauth.exe, LICENSE, NOTICE, README.md $stage/
-          Compress-Archive -Path $stage -DestinationPath "$stage.zip"
-          (Get-FileHash "$stage.zip" -Algorithm SHA256).Hash.ToLower() + "  $stage.zip" `
-            | Out-File -Encoding ascii "$stage.zip.sha256"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-amd64-esmauth
-          path: |
-            esmauth-*-windows-amd64.zip
-            esmauth-*-windows-amd64.zip.sha256
+            *-linux-amd64.tar.gz
+            *-linux-amd64.tar.gz.sha256
+            *-windows-amd64.zip
+            *-windows-amd64.zip.sha256
 
   release:
-    name: Publish GitHub release
-    needs: [build-linux, build-windows, build-linux-esmauth, build-windows-esmauth]
+    name: Attach artifacts to release
+    needs: [build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -117,14 +83,10 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
-          draft: true
-          generate_release_notes: true
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          fail_on_unmatched_files: true
           files: |
-            esmetrics-*.tar.gz
-            esmetrics-*.tar.gz.sha256
-            esmetrics-*.zip
-            esmetrics-*.zip.sha256
-            esmauth-*.tar.gz
-            esmauth-*.tar.gz.sha256
-            esmauth-*.zip
-            esmauth-*.zip.sha256
+            *-linux-amd64.tar.gz
+            *-linux-amd64.tar.gz.sha256
+            *-windows-amd64.zip
+            *-windows-amd64.zip.sha256
