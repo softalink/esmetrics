@@ -4,7 +4,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::civil::{days_from_civil, from_components, NANOS_PER_SEC};
+use crate::civil::{from_components, NANOS_PER_SEC};
 
 fn now_unix_ns() -> i64 {
     SystemTime::now()
@@ -221,15 +221,31 @@ fn unix_ts_nanoseconds(n: i64) -> i64 {
 /// value Go's `timeutil.GetLocalTimezoneOffsetNsecs` reports from
 /// `time.Now().Zone()`.
 ///
-/// It is computed by breaking the current instant into calendar components in
-/// both local and UTC time (via the C library's `localtime`/`gmtime`) and
-/// diffing them. This deliberately avoids the `tm_gmtoff` field, which the
-/// portable `libc::tm` exposes on Unix but not on Windows.
+/// It is computed from the OS timezone database for the current instant
+/// (accounting for DST): on Unix via `localtime`/`gmtime`, on Windows via
+/// `GetTimeZoneInformation`. This deliberately avoids the `tm_gmtoff` field,
+/// which the portable `libc::tm` exposes on Unix but not on Windows.
 fn local_tz_offset_ns() -> i64 {
-    // SAFETY: `time`, `gmtime` and `localtime` are standard C library calls
-    // available on every supported platform. `gmtime`/`localtime` return
-    // pointers into shared static storage, so each result is copied out (`*ptr`
-    // into an owned `libc::tm`) before the next call can overwrite it.
+    #[cfg(unix)]
+    {
+        unix_local_tz_offset_ns()
+    }
+    #[cfg(windows)]
+    {
+        windows_local_tz_offset_ns()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        0
+    }
+}
+
+#[cfg(unix)]
+fn unix_local_tz_offset_ns() -> i64 {
+    // SAFETY: `time`, `gmtime` and `localtime` are standard C library calls on
+    // Unix. `gmtime`/`localtime` return pointers into shared static storage, so
+    // each result is copied out (`*ptr` into an owned `libc::tm`) before the
+    // next call can overwrite it.
     unsafe {
         let t: libc::time_t = libc::time(std::ptr::null_mut());
         let gm = libc::gmtime(&t);
@@ -249,13 +265,59 @@ fn local_tz_offset_ns() -> i64 {
 /// Treats a broken-down `tm` as a UTC calendar time and returns the
 /// corresponding unix-second count. Used only to diff two `tm` values, so the
 /// (identical) epoch offset cancels out.
+#[cfg(unix)]
 fn tm_unix_secs(tm: &libc::tm) -> i64 {
-    let days = days_from_civil(
+    let days = crate::civil::days_from_civil(
         i64::from(tm.tm_year) + 1900,
         (tm.tm_mon as u32) + 1,
         tm.tm_mday as u32,
     );
     days * 86400 + i64::from(tm.tm_hour) * 3600 + i64::from(tm.tm_min) * 60 + i64::from(tm.tm_sec)
+}
+
+/// Windows local-timezone offset (local - UTC) in nanoseconds for the current
+/// instant, via `GetTimeZoneInformation`, accounting for DST — the Windows
+/// analogue of the Unix `localtime`/`gmtime` diff above.
+#[cfg(windows)]
+fn windows_local_tz_offset_ns() -> i64 {
+    #[repr(C)]
+    struct SystemTime {
+        fields: [u16; 8],
+    }
+    #[repr(C)]
+    struct TimeZoneInformation {
+        bias: i32,
+        standard_name: [u16; 32],
+        standard_date: SystemTime,
+        standard_bias: i32,
+        daylight_name: [u16; 32],
+        daylight_date: SystemTime,
+        daylight_bias: i32,
+    }
+    extern "system" {
+        fn GetTimeZoneInformation(info: *mut TimeZoneInformation) -> u32;
+    }
+    const TIME_ZONE_ID_INVALID: u32 = 0xFFFF_FFFF;
+    const TIME_ZONE_ID_DAYLIGHT: u32 = 2;
+    // SAFETY: `GetTimeZoneInformation` fills a caller-owned, zero-initialized
+    // `TIME_ZONE_INFORMATION` (this layout matches the Win32 struct) and returns
+    // the zone id; afterward we read only its plain integer fields.
+    unsafe {
+        let mut info: TimeZoneInformation = std::mem::zeroed();
+        let id = GetTimeZoneInformation(&mut info);
+        if id == TIME_ZONE_ID_INVALID {
+            return 0;
+        }
+        // Win32 defines UTC = local + bias (minutes); the effective bias adds
+        // the daylight or standard adjustment, so offset(local - UTC) = -bias.
+        let extra = if id == TIME_ZONE_ID_DAYLIGHT {
+            info.daylight_bias
+        } else {
+            info.standard_bias
+        };
+        let bias_minutes = i64::from(info.bias) + i64::from(extra);
+        -bias_minutes * 60 * NANOS_PER_SEC
+    }
 }
 
 fn saturating_from_i128(v: i128) -> i64 {
