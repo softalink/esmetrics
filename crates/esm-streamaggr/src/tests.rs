@@ -193,16 +193,20 @@ fn windowed_total_plumbs_through() {
     // Exercises the enable_windows config path end to end: the aggregator
     // builds the shared-state (blue+green) output map, routes both fresh
     // samples to the blue window, and flushes the same 20 delta as the plain
-    // `total` output. `no_align_flush_to_interval` pins min_time to now so the
-    // window routing is deterministic regardless of wall-clock position.
+    // `total` output. `no_align_flush_to_interval` sets min_time to the
+    // aggregator's construction time — which is a hair AFTER the `now` captured
+    // here. Both samples are placed a few seconds ahead of `now` so they sit
+    // safely above min_deadline (never dropped as "old" due to sub-ms
+    // construction jitter) and below max_deadline (min_time + 1m), keeping the
+    // test deterministic regardless of wall-clock position.
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as i64;
     let cfg = "\n- interval: 1m\n  enable_windows: true\n  no_align_flush_to_interval: true\n  outputs: [total]\n";
     let tss = vec![
-        series(&[("__name__", "c"), ("job", "a")], &[(now, 10.0)]),
-        series(&[("__name__", "c"), ("job", "a")], &[(now + 1000, 30.0)]),
+        series(&[("__name__", "c"), ("job", "a")], &[(now + 5_000, 10.0)]),
+        series(&[("__name__", "c"), ("job", "a")], &[(now + 6_000, 30.0)]),
     ];
     let got = aggregate(cfg, &tss);
     assert_eq!(got, "{__name__=\"c:1m_total\",job=\"a\"} 20\n");
