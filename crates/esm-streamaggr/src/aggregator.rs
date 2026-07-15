@@ -161,7 +161,8 @@ impl Aggregator {
                     self.params.metrics.ignored_nan_samples.inc();
                     continue;
                 }
-                if (self.params.ignore_old_samples || enable_windows) && s.timestamp < min_deadline {
+                if (self.params.ignore_old_samples || enable_windows) && s.timestamp < min_deadline
+                {
                     self.params.metrics.ignored_old_samples.inc();
                     continue;
                 }

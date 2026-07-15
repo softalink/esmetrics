@@ -621,7 +621,10 @@ mod tests {
             alerts.labels
         );
         assert!(
-            alerts.labels.iter().any(|(k, v)| k == "alertname" && v == "A"),
+            alerts
+                .labels
+                .iter()
+                .any(|(k, v)| k == "alertname" && v == "A"),
             "stale ALERTS must retain identity labels: {:?}",
             alerts.labels
         );
@@ -669,8 +672,12 @@ mod tests {
         let stale_pending: Vec<_> = tss
             .iter()
             .filter(|s| {
-                s.labels.iter().any(|(k, v)| k == "__name__" && v == "ALERTS")
-                    && s.labels.iter().any(|(k, v)| k == "alertstate" && v == "pending")
+                s.labels
+                    .iter()
+                    .any(|(k, v)| k == "__name__" && v == "ALERTS")
+                    && s.labels
+                        .iter()
+                        .any(|(k, v)| k == "alertstate" && v == "pending")
             })
             .collect();
         assert_eq!(stale_pending.len(), 1, "one stale pending ALERTS expected");
