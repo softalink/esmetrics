@@ -1,0 +1,81 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/esm-common",
+    "crates/esm-http",
+    "crates/esm-encoding",
+    "crates/esm-mergeset",
+    "crates/esm-storage",
+    "crates/esm-protoparser",
+    "crates/esm-metricsql",
+    "crates/esm-promql",
+    "crates/esm-insert",
+    "crates/esm-select",
+    "crates/esm-auth",
+    "crates/esmauth",
+    "crates/esmetrics",
+    "crates/esm-backup",
+    "crates/esm-gotemplate",
+    "crates/esmalert",
+    "crates/esmalert-tool",
+    "crates/esm-relabel",
+    "crates/esm-streamaggr",
+    "crates/esmagent",
+    "crates/esmctl",
+]
+
+[workspace.package]
+version = "1.146.0"
+authors = ["Softalink LLC"]
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/softalink/esmetrics"
+rust-version = "1.85"
+
+[workspace.dependencies]
+esm-common = { path = "crates/esm-common" }
+esm-encoding = { path = "crates/esm-encoding" }
+esm-mergeset = { path = "crates/esm-mergeset" }
+esm-storage = { path = "crates/esm-storage" }
+esm-protoparser = { path = "crates/esm-protoparser" }
+esm-metricsql = { path = "crates/esm-metricsql" }
+esm-promql = { path = "crates/esm-promql" }
+esm-insert = { path = "crates/esm-insert" }
+esm-select = { path = "crates/esm-select" }
+esm-gotemplate = { path = "crates/esm-gotemplate" }
+esm-relabel = { path = "crates/esm-relabel" }
+esm-streamaggr = { path = "crates/esm-streamaggr" }
+
+sha2 = "0.10"
+zstd = "0.13"
+snap = "1"
+regex = "1"
+memmap2 = "0.9"
+libc = "0.2"
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+rand = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+env_logger = "0.11"
+anyhow = "1"
+thiserror = "2"
+object_store = { version = "0.14", features = ["aws", "gcp", "azure"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+futures = "0.3"
+bytes = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+serde_yaml_ng = "0.10"
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = 1
+
+[profile.bench]
+opt-level = 3
+lto = "thin"

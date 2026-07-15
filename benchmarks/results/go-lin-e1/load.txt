@@ -1,0 +1,6 @@
+time,per. metric/s,metric total,overall metric/s,per. row/s,row total,overall row/s
+
+Summary:
+loaded 8640000 metrics in 2.387sec with 4 workers (mean rate 3619072.87 metrics/sec)
+loaded 864000 rows in 2.387sec with 4 workers (mean rate 361907.29 rows/sec)
+Saving results json file to /home/test/esmetrics/benchmarks/results/go-lin-e1/load.json

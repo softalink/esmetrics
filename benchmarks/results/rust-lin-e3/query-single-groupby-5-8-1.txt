@@ -1,0 +1,7 @@
+Run complete after 1000 queries with 4 workers (Overall query rate 4711.18 queries/sec):
+VictoriaMetrics 5 cpu metric(s), random    8 hosts, random 1h0m0s by 1m:
+min:     0.43ms, med:     0.77ms, mean:     0.84ms, max:    3.03ms, stddev:     0.29ms, sum:   0.8sec, count: 1000
+all queries                                                            :
+min:     0.43ms, med:     0.77ms, mean:     0.84ms, max:    3.03ms, stddev:     0.29ms, sum:   0.8sec, count: 1000
+wall clock time: 0.213380sec
+Saving results json file to /home/test/esmetrics/benchmarks/results/rust-lin-e3/query-single-groupby-5-8-1.json

@@ -1,0 +1,77 @@
+After 100 queries with 4 workers:
+Interval query rate: 4414.15 queries/sec	Overall query rate: 4414.15 queries/sec
+VictoriaMetrics 1 cpu metric(s), random    1 hosts, random 12h0m0s by 1m:
+min:     0.51ms, med:     1.02ms, mean:     0.84ms, max:    2.60ms, stddev:     0.38ms, sum:   0.1sec, count: 100
+all queries                                                             :
+min:     0.51ms, med:     1.02ms, mean:     0.84ms, max:    2.60ms, stddev:     0.38ms, sum:   0.1sec, count: 100
+
+After 200 queries with 4 workers:
+Interval query rate: 4928.61 queries/sec	Overall query rate: 4657.22 queries/sec
+VictoriaMetrics 1 cpu metric(s), random    1 hosts, random 12h0m0s by 1m:
+min:     0.51ms, med:     1.02ms, mean:     0.83ms, max:    2.60ms, stddev:     0.33ms, sum:   0.2sec, count: 200
+all queries                                                             :
+min:     0.51ms, med:     1.02ms, mean:     0.83ms, max:    2.60ms, stddev:     0.33ms, sum:   0.2sec, count: 200
+
+After 300 queries with 4 workers:
+Interval query rate: 4301.82 queries/sec	Overall query rate: 4532.40 queries/sec
+VictoriaMetrics 1 cpu metric(s), random    1 hosts, random 12h0m0s by 1m:
+min:     0.51ms, med:     1.02ms, mean:     0.86ms, max:    2.60ms, stddev:     0.31ms, sum:   0.3sec, count: 300
+all queries                                                             :
+min:     0.51ms, med:     1.02ms, mean:     0.86ms, max:    2.60ms, stddev:     0.31ms, sum:   0.3sec, count: 300
+
+After 400 queries with 4 workers:
+Interval query rate: 4799.98 queries/sec	Overall query rate: 4596.46 queries/sec
+VictoriaMetrics 1 cpu metric(s), random    1 hosts, random 12h0m0s by 1m:
+min:     0.50ms, med:     1.02ms, mean:     0.85ms, max:    2.60ms, stddev:     0.30ms, sum:   0.3sec, count: 400
+all queries                                                             :
+min:     0.50ms, med:     1.02ms, mean:     0.85ms, max:    2.60ms, stddev:     0.30ms, sum:   0.3sec, count: 400
+
+After 500 queries with 4 workers:
+Interval query rate: 4642.57 queries/sec	Overall query rate: 4605.61 queries/sec
+VictoriaMetrics 1 cpu metric(s), random    1 hosts, random 12h0m0s by 1m:
+min:     0.50ms, med:     1.02ms, mean:     0.85ms, max:    2.60ms, stddev:     0.30ms, sum:   0.4sec, count: 500
+all queries                                                             :
+min:     0.50ms, med:     1.02ms, mean:     0.85ms, max:    2.60ms, stddev:     0.30ms, sum:   0.4sec, count: 500
+
+After 600 queries with 4 workers:
+Interval query rate: 4183.93 queries/sec	Overall query rate: 4529.52 queries/sec
+VictoriaMetrics 1 cpu metric(s), random    1 hosts, random 12h0m0s by 1m:
+min:     0.50ms, med:     1.02ms, mean:     0.87ms, max:    2.60ms, stddev:     0.32ms, sum:   0.5sec, count: 600
+all queries                                                             :
+min:     0.50ms, med:     1.02ms, mean:     0.87ms, max:    2.60ms, stddev:     0.32ms, sum:   0.5sec, count: 600
+
+After 700 queries with 4 workers:
+Interval query rate: 4608.13 queries/sec	Overall query rate: 4540.59 queries/sec
+VictoriaMetrics 1 cpu metric(s), random    1 hosts, random 12h0m0s by 1m:
+min:     0.00ms, med:     1.02ms, mean:     0.86ms, max:    2.60ms, stddev:     0.31ms, sum:   0.6sec, count: 700
+all queries                                                             :
+min:     0.00ms, med:     1.02ms, mean:     0.86ms, max:    2.60ms, stddev:     0.31ms, sum:   0.6sec, count: 700
+
+After 800 queries with 4 workers:
+Interval query rate: 4942.13 queries/sec	Overall query rate: 4587.17 queries/sec
+VictoriaMetrics 1 cpu metric(s), random    1 hosts, random 12h0m0s by 1m:
+min:     0.00ms, med:     1.02ms, mean:     0.86ms, max:    2.60ms, stddev:     0.31ms, sum:   0.7sec, count: 800
+all queries                                                             :
+min:     0.00ms, med:     1.02ms, mean:     0.86ms, max:    2.60ms, stddev:     0.31ms, sum:   0.7sec, count: 800
+
+After 900 queries with 4 workers:
+Interval query rate: 4971.36 queries/sec	Overall query rate: 4626.90 queries/sec
+VictoriaMetrics 1 cpu metric(s), random    1 hosts, random 12h0m0s by 1m:
+min:     0.00ms, med:     1.02ms, mean:     0.85ms, max:    2.60ms, stddev:     0.31ms, sum:   0.8sec, count: 900
+all queries                                                             :
+min:     0.00ms, med:     1.02ms, mean:     0.85ms, max:    2.60ms, stddev:     0.31ms, sum:   0.8sec, count: 900
+
+After 1000 queries with 4 workers:
+Interval query rate: 4608.70 queries/sec	Overall query rate: 4625.08 queries/sec
+VictoriaMetrics 1 cpu metric(s), random    1 hosts, random 12h0m0s by 1m:
+min:     0.00ms, med:     1.02ms, mean:     0.85ms, max:    2.60ms, stddev:     0.31ms, sum:   0.9sec, count: 1000
+all queries                                                             :
+min:     0.00ms, med:     1.02ms, mean:     0.85ms, max:    2.60ms, stddev:     0.31ms, sum:   0.9sec, count: 1000
+
+Run complete after 1000 queries with 4 workers (Overall query rate 4610.68 queries/sec):
+VictoriaMetrics 1 cpu metric(s), random    1 hosts, random 12h0m0s by 1m:
+min:     0.00ms, med:     1.02ms, mean:     0.85ms, max:    2.60ms, stddev:     0.31ms, sum:   0.9sec, count: 1000
+all queries                                                             :
+min:     0.00ms, med:     1.02ms, mean:     0.85ms, max:    2.60ms, stddev:     0.31ms, sum:   0.9sec, count: 1000
+wall clock time: 0.216888sec
+Saving results json file to C:\bench\results\go-win7\query-single-groupby-1-1-12.json

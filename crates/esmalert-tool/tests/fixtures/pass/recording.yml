@@ -1,0 +1,30 @@
+# Passing fixture: a recording rule (job:up:count) whose result is asserted
+# via metricsql_expr_test -- the way to check a recording rule's output,
+# since recording rules have no `alert_rule_test`-style assertion. At t=3m
+# both instances are present, so count(up) by (job) is exactly 2.
+#
+# Note: this fixture deliberately does NOT carry a `_` gap marker. A single-
+# step gap isn't observable through a metricsql_expr_test here -- MetricsQL's
+# 5m instant-query lookback still finds the last sample before the gap, so a
+# gap'd series and an un-gap'd one produce byte-identical results at every
+# eval_time in range. Rather than leave a decorative `_` that implies
+# coverage it doesn't provide, gap-notation parsing is covered where it's
+# actually observable: the input-parser unit tests in `src/input.rs`
+# (`parses_expanding_and_gaps_and_stale`, `expands_repeat_and_gap_x_forms`).
+rule_files:
+  - tests/fixtures/rules/recording_rules.yml
+evaluation_interval: 1m
+tests:
+  - name: job:up:count reflects both instances
+    interval: 1m
+    input_series:
+      - series: 'up{job="x",instance="h1"}'
+        values: '1 1 1 1'
+      - series: 'up{job="x",instance="h2"}'
+        values: '1 1 1 1'
+    metricsql_expr_test:
+      - expr: job:up:count
+        eval_time: 3m
+        exp_samples:
+          - labels: 'job:up:count{job="x"}'
+            value: 2

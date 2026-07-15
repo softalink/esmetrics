@@ -1,0 +1,38 @@
+[package]
+name = "esmauth"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "esmauth"
+path = "src/main.rs"
+
+[dependencies]
+esm-auth = { path = "../esm-auth" }
+esm-common.workspace = true
+esm-http = { path = "../esm-http" }
+log.workspace = true
+reqwest.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+] }
+
+[target.'cfg(windows)'.dependencies.mimalloc]
+version = "0.1"
+default-features = false
+
+[dev-dependencies]
+esmetrics = { path = "../esmetrics" }
+
+[build-dependencies]
+winresource = "0.1"

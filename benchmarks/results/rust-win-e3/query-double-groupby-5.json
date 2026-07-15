@@ -1,0 +1,48 @@
+{
+ "ResultFormatVersion": "0.1",
+ "RunnerConfig": {
+  "DBName": "benchmark",
+  "Limit": 0,
+  "LimitRPS": 0,
+  "MemProfile": "",
+  "HDRLatenciesFile": "",
+  "Workers": 4,
+  "PrintResponses": false,
+  "Debug": 0,
+  "FileName": "C:\\bench\\data\\queries-double-groupby-5.dat",
+  "BurnIn": 0,
+  "PrintInterval": 100,
+  "PrewarmQueries": false,
+  "ResultsFile": "C:\\bench\\results-rust-win-e3\\query-double-groupby-5.json"
+ },
+ "StartTime": 1783358351000,
+ "EndTime": 1783358356000,
+ "DurationMillis": 5226,
+ "Totals": {
+  "burnIn": 0,
+  "limit": 0,
+  "overallQuantiles": {
+   "VictoriaMetrics_mean_of_5_metrics_all_hosts_random_12h0m0s_by_1h": {
+    "q0": 0,
+    "q100": 48.879,
+    "q50": 20.597,
+    "q95": 27.112,
+    "q99": 32.16,
+    "q999": 45.277
+   },
+   "all_queries": {
+    "q0": 0,
+    "q100": 48.879,
+    "q50": 20.597,
+    "q95": 27.112,
+    "q99": 32.16,
+    "q999": 45.277
+   }
+  },
+  "overallQueryRates": {
+   "VictoriaMetrics_mean_of_5_metrics_all_hosts_random_12h0m0s_by_1h": 191.34121312165996,
+   "all_queries": 191.34121312165996
+  },
+  "prewarmQueries": false
+ }
+}

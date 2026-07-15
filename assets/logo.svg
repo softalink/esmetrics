@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 160" width="640" height="160" role="img" aria-label="EsMetrics — secure, fast, memory-safe time-series database">
+  <defs>
+    <linearGradient id="shield" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#122B4A"/>
+      <stop offset="1" stop-color="#0B1D33"/>
+    </linearGradient>
+    <linearGradient id="pulse" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#27E0A6"/>
+      <stop offset="1" stop-color="#3EC5FF"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Theme-adaptive colors: light theme by default, brightened strokes and
+       light wordmark when the environment prefers a dark color scheme. -->
+  <style>
+    .shield-border { stroke: #2E5580; }
+    .word-primary  { fill: #122B4A; }
+    .word-accent   { fill: #0E9E74; }
+    .tagline       { fill: #5A7189; }
+    @media (prefers-color-scheme: dark) {
+      .shield-border { stroke: #4879B2; }
+      .word-primary  { fill: #E6EDF3; }
+      .word-accent   { fill: #2BD9A0; }
+      .tagline       { fill: #93A9BE; }
+    }
+  </style>
+
+  <!-- Shield: security -->
+  <path class="shield-border" d="M80 12 L136 32 v44 c0 34 -24 58 -56 70 C48 134 24 110 24 76 V32 Z"
+        fill="url(#shield)" stroke-width="3"/>
+
+  <!-- Time axis ticks inside the shield: time series -->
+  <g stroke="#3A6795" stroke-width="2" opacity="0.7">
+    <line x1="44" y1="104" x2="116" y2="104"/>
+    <line x1="52" y1="100" x2="52" y2="108"/>
+    <line x1="72" y1="100" x2="72" y2="108"/>
+    <line x1="92" y1="100" x2="92" y2="108"/>
+    <line x1="112" y1="100" x2="112" y2="108"/>
+  </g>
+
+  <!-- Sparkline pulse with a lightning-sharp spike: fast time series -->
+  <polyline points="40,84 56,80 64,88 72,60 78,96 86,38 94,92 102,72 112,76 120,68"
+            fill="none" stroke="url(#pulse)" stroke-width="6"
+            stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="86" cy="38" r="5.5" fill="#27E0A6"/>
+
+  <!-- Wordmark -->
+  <text class="word-primary" x="168" y="86" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif"
+        font-size="58" font-weight="700" letter-spacing="-1">Es<tspan class="word-accent">Metrics</tspan></text>
+  <text class="tagline" x="171" y="118" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif"
+        font-size="13" font-weight="600" letter-spacing="1.2">SECURE, FAST, MEMORY-SAFE TIME-SERIES DATABASE</text>
+</svg>

@@ -1,0 +1,27 @@
+{
+ "ResultFormatVersion": "0.1",
+ "RunnerConfig": {
+  "db-name": "benchmark",
+  "batch-size": 10000,
+  "workers": 4,
+  "limit": 0,
+  "do-load": true,
+  "do-create-db": true,
+  "do-abort-on-exist": false,
+  "reporting-period": 10000000000,
+  "hash-workers": false,
+  "no-flow-control": false,
+  "channel-capacity": 0,
+  "insert-intervals": "",
+  "results-file": "/home/test/esmetrics/benchmarks/results/go-lin7/load.json",
+  "file": "/home/test/refsrc/tsbs-data/cpu-only-100h-1d.lp",
+  "seed": 0
+ },
+ "StartTime": 1783067198,
+ "EndTime": 1783067200,
+ "DurationMillis": 2409,
+ "Totals": {
+  "metricRate": 3585684.6455900855,
+  "rowRate": 358568.46455900854
+ }
+}

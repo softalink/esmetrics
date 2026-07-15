@@ -1,0 +1,6 @@
+time,per. metric/s,metric total,overall metric/s,per. row/s,row total,overall row/s
+
+Summary:
+loaded 8640000 metrics in 1.921sec with 4 workers (mean rate 4498035.86 metrics/sec)
+loaded 864000 rows in 1.921sec with 4 workers (mean rate 449803.59 rows/sec)
+Saving results json file to C:\bench\results\rust-win7\load.json

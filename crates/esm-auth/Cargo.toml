@@ -1,0 +1,17 @@
+[package]
+name = "esm-auth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+esm-http = { path = "../esm-http" }
+esm-common = { path = "../esm-common" }
+serde = { workspace = true }
+serde_yaml_ng = { workspace = true }
+regex = { workspace = true }
+reqwest = { workspace = true }
+log = { workspace = true }
+xxhash-rust = { version = "0.8", features = ["xxh64"] }
+
+[dev-dependencies]

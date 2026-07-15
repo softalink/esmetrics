@@ -1,0 +1,19 @@
+[package]
+name = "esm-protoparser"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+esm-common.workspace = true
+esm-encoding.workspace = true
+flate2 = "1"
+zstd.workspace = true
+snap.workspace = true
+regex.workspace = true
+# preserve_order: vmimport tags must iterate in JSON object key order,
+# matching Go fastjson.Object.Visit (insertion order), not sorted order.
+serde_json = { workspace = true, features = ["preserve_order"] }

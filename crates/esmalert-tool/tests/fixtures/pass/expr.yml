@@ -1,0 +1,27 @@
+# Passing fixture: a pure metricsql_expr_test (no alert_rule_test) that makes
+# the `stale` value-sequence marker load-bearing. The series is `1 1 stale`,
+# so a staleness marker lands at t=2m. Two assertions bracket it:
+#   - at t=1m (before the marker) the series is PRESENT with value 1;
+#   - at t=2m (the marker) the series has gone stale, so an instant query
+#     returns NO sample for it -- asserted via an empty `exp_samples`.
+# Flip the `stale` token to a normal value (e.g. `1 1 1`) and the t=2m
+# assertion fails (the series is then present with value 1 instead of
+# absent), which is exactly what proves stale handling is exercised here.
+rule_files:
+  - tests/fixtures/rules/expr_rules.yml
+evaluation_interval: 1m
+tests:
+  - name: a stale marker makes the series absent at its timestamp
+    interval: 1m
+    input_series:
+      - series: 'up{job="y",instance="h1"}'
+        values: '1 1 stale'
+    metricsql_expr_test:
+      - expr: up
+        eval_time: 1m
+        exp_samples:
+          - labels: 'up{job="y",instance="h1"}'
+            value: 1
+      - expr: up
+        eval_time: 2m
+        exp_samples: []

@@ -1,0 +1,18 @@
+[package]
+name = "esm-promql"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+esm-common = { workspace = true }
+esm-metricsql = { workspace = true }
+esm-storage = { workspace = true }
+log = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+regex = { workspace = true }

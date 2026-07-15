@@ -1,0 +1,11 @@
+# Rule file referenced (as `tests/fixtures/rules/recording_rules.yml`) by
+# ../pass/recording.yml. One recording rule whose
+# result is asserted indirectly via a `metricsql_expr_test` on its recorded
+# series name (there is no `alert_rule_test`-style assertion for recording
+# rules, so `metricsql_expr_test` is the way to check one, per vmalert-tool
+# upstream).
+groups:
+  - name: g
+    rules:
+      - record: job:up:count
+        expr: count(up) by (job)

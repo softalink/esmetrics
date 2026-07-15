@@ -1,0 +1,7 @@
+Run complete after 1000 queries with 4 workers (Overall query rate 54.06 queries/sec):
+VictoriaMetrics mean of 10 metrics, all hosts, random 12h0m0s by 1h:
+min:    30.86ms, med:    72.31ms, mean:    73.84ms, max:  162.85ms, stddev:    16.97ms, sum:  73.8sec, count: 1000
+all queries                                                        :
+min:    30.86ms, med:    72.31ms, mean:    73.84ms, max:  162.85ms, stddev:    16.97ms, sum:  73.8sec, count: 1000
+wall clock time: 18.509279sec
+Saving results json file to /home/test/esmetrics/benchmarks/results/go-lin6/query-double-groupby-all.json

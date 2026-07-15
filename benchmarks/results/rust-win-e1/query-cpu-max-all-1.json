@@ -1,0 +1,48 @@
+{
+ "ResultFormatVersion": "0.1",
+ "RunnerConfig": {
+  "DBName": "benchmark",
+  "Limit": 0,
+  "LimitRPS": 0,
+  "MemProfile": "",
+  "HDRLatenciesFile": "",
+  "Workers": 4,
+  "PrintResponses": false,
+  "Debug": 0,
+  "FileName": "C:\\bench\\data\\queries-cpu-max-all-1.dat",
+  "BurnIn": 0,
+  "PrintInterval": 100,
+  "PrewarmQueries": false,
+  "ResultsFile": "C:\\bench\\results-rust-win-e1\\query-cpu-max-all-1.json"
+ },
+ "StartTime": 1783358120000,
+ "EndTime": 1783358121000,
+ "DurationMillis": 155,
+ "Totals": {
+  "burnIn": 0,
+  "limit": 0,
+  "overallQuantiles": {
+   "VictoriaMetrics_max_of_all_CPU_metrics_random_1_hosts_random_8h0m0s_by_1h": {
+    "q0": 0,
+    "q100": 2.856,
+    "q50": 0.537,
+    "q95": 1.257,
+    "q99": 1.642,
+    "q999": 2.856
+   },
+   "all_queries": {
+    "q0": 0,
+    "q100": 2.856,
+    "q50": 0.537,
+    "q95": 1.257,
+    "q99": 1.642,
+    "q999": 2.856
+   }
+  },
+  "overallQueryRates": {
+   "VictoriaMetrics_max_of_all_CPU_metrics_random_1_hosts_random_8h0m0s_by_1h": 6445.8573763813465,
+   "all_queries": 6445.8573763813465
+  },
+  "prewarmQueries": false
+ }
+}

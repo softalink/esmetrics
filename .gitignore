@@ -1,0 +1,18 @@
+/target
+**/*.rs.bk
+*.pdb
+/esmetrics-data
+/victoria-metrics-data
+/benchmarks/results/*.raw
+/benchmarks/data
+.reference/
+*.tmp
+
+# Generated during benchmark runs — never commit
+/benchmarks/results/*/server*.log
+/benchmarks/results/*/*.pid
+
+# Local-only: agent instructions, upstream source cache, tool state
+/CLAUDE.md
+/.upstream/
+/.claude/

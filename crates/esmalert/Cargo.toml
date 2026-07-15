@@ -1,0 +1,44 @@
+[package]
+name = "esmalert"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "esmalert"
+path = "src/main.rs"
+
+[dependencies]
+esm-common.workspace = true
+esm-metricsql.workspace = true
+esm-gotemplate.workspace = true
+esm-protoparser.workspace = true
+esm-http = { path = "../esm-http" }
+serde.workspace = true
+serde_yaml_ng.workspace = true
+sha2.workspace = true
+crossbeam-channel.workspace = true
+glob = "0.3"
+log.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+url = "2"
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+] }
+
+[target.'cfg(windows)'.dependencies.mimalloc]
+version = "0.1"
+default-features = false
+
+[dev-dependencies]
+snap.workspace = true

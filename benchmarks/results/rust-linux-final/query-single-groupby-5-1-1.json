@@ -1,0 +1,48 @@
+{
+ "ResultFormatVersion": "0.1",
+ "RunnerConfig": {
+  "DBName": "benchmark",
+  "Limit": 0,
+  "LimitRPS": 0,
+  "MemProfile": "",
+  "HDRLatenciesFile": "",
+  "Workers": 4,
+  "PrintResponses": false,
+  "Debug": 0,
+  "FileName": "/home/test/refsrc/tsbs-data/queries-single-groupby-5-1-1.dat",
+  "BurnIn": 0,
+  "PrintInterval": 100,
+  "PrewarmQueries": false,
+  "ResultsFile": "/home/test/esmetrics/benchmarks/results/rust-linux-final/query-single-groupby-5-1-1.json"
+ },
+ "StartTime": 1783057294000,
+ "EndTime": 1783057294000,
+ "DurationMillis": 114,
+ "Totals": {
+  "burnIn": 0,
+  "limit": 0,
+  "overallQuantiles": {
+   "VictoriaMetrics_5_cpu_metric_s_random_1_hosts_random_1h0m0s_by_1m": {
+    "q0": 0,
+    "q100": 2.328,
+    "q50": 0.402,
+    "q95": 0.744,
+    "q99": 1.072,
+    "q999": 1.972
+   },
+   "all_queries": {
+    "q0": 0,
+    "q100": 2.328,
+    "q50": 0.402,
+    "q95": 0.744,
+    "q99": 1.072,
+    "q999": 1.972
+   }
+  },
+  "overallQueryRates": {
+   "VictoriaMetrics_5_cpu_metric_s_random_1_hosts_random_1h0m0s_by_1m": 8809.62217944309,
+   "all_queries": 8809.62217944309
+  },
+  "prewarmQueries": false
+ }
+}

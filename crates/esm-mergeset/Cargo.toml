@@ -1,0 +1,16 @@
+[package]
+name = "esm-mergeset"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+esm-common = { workspace = true }
+esm-encoding = { workspace = true }
+log = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

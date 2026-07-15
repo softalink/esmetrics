@@ -1,0 +1,23 @@
+# Failing fixture: same rule file and scenario as ../pass/alerting.yml (the
+# InstanceDown alert always fires with `severity: page`), but this test
+# expects the wrong severity -- must produce a diff and fail.
+rule_files:
+  - tests/fixtures/rules/alerts.yml
+evaluation_interval: 1m
+tests:
+  - name: instance down with wrong expected severity
+    interval: 1m
+    input_series:
+      - series: 'up{job="x",instance="h1"}'
+        values: '0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 4m
+        groupname: g
+        alertname: InstanceDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: x
+              instance: h1
+            exp_annotations:
+              summary: "instance down"

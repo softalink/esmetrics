@@ -1,0 +1,20 @@
+[package]
+name = "esm-storage"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+esm-common = { workspace = true }
+esm-encoding = { workspace = true }
+esm-mergeset = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }
+regex = { workspace = true }
+xxhash-rust = { version = "0.8", features = ["xxh64"] }
+hashbrown = { version = "0.15", default-features = false }

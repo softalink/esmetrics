@@ -1,0 +1,43 @@
+[package]
+name = "esmetrics"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "esmetrics"
+path = "src/main.rs"
+
+[dependencies]
+esm-common.workspace = true
+esm-http = { path = "../esm-http" }
+esm-insert.workspace = true
+esm-promql.workspace = true
+esm-metricsql.workspace = true
+esm-select.workspace = true
+esm-storage.workspace = true
+esm-streamaggr.workspace = true
+log.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+] }
+
+[target.'cfg(windows)'.dependencies.mimalloc]
+version = "0.1"
+default-features = false
+
+[dev-dependencies]
+esm-backup = { path = "../esm-backup" }
+
+[build-dependencies]
+winresource = "0.1"

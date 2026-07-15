@@ -1,0 +1,16 @@
+# Rule file referenced (as `tests/fixtures/rules/alerts.yml`) by
+# ../pass/alerting.yml and ../fail/wrong_alert.yml. Lives outside
+# `pass/`/`fail/` so the integration test's `*.yml` glob over those two
+# directories only ever enumerates actual unit-test files, never rule files.
+# One alerting rule with a non-zero `for:` so a unit test can exercise the
+# Pending -> Firing transition.
+groups:
+  - name: g
+    rules:
+      - alert: InstanceDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "instance down"

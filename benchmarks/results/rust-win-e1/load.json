@@ -1,0 +1,27 @@
+{
+ "ResultFormatVersion": "0.1",
+ "RunnerConfig": {
+  "db-name": "benchmark",
+  "batch-size": 10000,
+  "workers": 4,
+  "limit": 0,
+  "do-load": true,
+  "do-create-db": true,
+  "do-abort-on-exist": false,
+  "reporting-period": 10000000000,
+  "hash-workers": false,
+  "no-flow-control": false,
+  "channel-capacity": 0,
+  "insert-intervals": "",
+  "results-file": "C:\\bench\\results-rust-win-e1\\load.json",
+  "file": "C:\\bench\\data\\cpu-only-100h-1d.lp",
+  "seed": 0
+ },
+ "StartTime": 1783358111,
+ "EndTime": 1783358113,
+ "DurationMillis": 1730,
+ "Totals": {
+  "metricRate": 4994122.3688301565,
+  "rowRate": 499412.23688301566
+ }
+}

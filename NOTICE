@@ -1,0 +1,23 @@
+EsMetrics
+Copyright 2026 Softalink LLC
+
+This product is a Rust port of, and a derivative work of, VictoriaMetrics
+(https://github.com/VictoriaMetrics/VictoriaMetrics), reference version
+v1.146.0, Copyright 2019-2026 VictoriaMetrics, Inc., licensed under the
+Apache License, Version 2.0.
+
+The on-disk formats, algorithms, and query semantics originate from the
+upstream project; the Rust implementation, its performance work, and the
+EsMetrics branding are by Softalink LLC.
+
+This product also bundles a built copy of the VictoriaMetrics web UI
+(vmui), from `app/vmui/packages/vmui` in the same upstream project and
+reference version (v1.146.0), Copyright 2019-2026 VictoriaMetrics, Inc.,
+licensed under the Apache License, Version 2.0. The vendored files live
+at `crates/esmetrics/assets/esmui/` and are a compiled build output, not
+ported source. They are built from upstream source **with modifications**:
+an EsMetrics rebrand (product name, logo, footer links/copyright, and the
+API-base path regex) applied as a source patch,
+`crates/esmetrics/assets/esmui/patches/rebrand.patch`, before building —
+see `crates/esmetrics/assets/esmui/PATCHES.md` for the exact procedure and
+full list of changes.

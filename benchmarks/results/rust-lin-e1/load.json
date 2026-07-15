@@ -1,0 +1,27 @@
+{
+ "ResultFormatVersion": "0.1",
+ "RunnerConfig": {
+  "db-name": "benchmark",
+  "batch-size": 10000,
+  "workers": 4,
+  "limit": 0,
+  "do-load": true,
+  "do-create-db": true,
+  "do-abort-on-exist": false,
+  "reporting-period": 10000000000,
+  "hash-workers": false,
+  "no-flow-control": false,
+  "channel-capacity": 0,
+  "insert-intervals": "",
+  "results-file": "/home/test/esmetrics/benchmarks/results/rust-lin-e1/load.json",
+  "file": "/home/test/refsrc/tsbs-data/cpu-only-100h-1d.lp",
+  "seed": 0
+ },
+ "StartTime": 1783357963,
+ "EndTime": 1783357965,
+ "DurationMillis": 1728,
+ "Totals": {
+  "metricRate": 4997678.980126102,
+  "rowRate": 499767.89801261027
+ }
+}

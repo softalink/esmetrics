@@ -1,0 +1,32 @@
+# Passing fixture: an alerting rule whose `for: 2m` must elapse before it
+# fires. Asserts no Firing alert at eval_time 0s (still Pending) and the
+# correct Firing alert (labels + annotations) at eval_time 4m. Exercises a
+# test-group `external_labels` entry, which is merged into every rule's
+# labels alongside the rule's own `labels:` block.
+rule_files:
+  - tests/fixtures/rules/alerts.yml
+evaluation_interval: 1m
+tests:
+  - name: instance down fires after for elapses
+    interval: 1m
+    external_labels:
+      cluster: test-cluster
+    input_series:
+      - series: 'up{job="x",instance="h1"}'
+        values: '0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 0s
+        groupname: g
+        alertname: InstanceDown
+        exp_alerts: []
+      - eval_time: 4m
+        groupname: g
+        alertname: InstanceDown
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              job: x
+              instance: h1
+              cluster: test-cluster
+            exp_annotations:
+              summary: "instance down"

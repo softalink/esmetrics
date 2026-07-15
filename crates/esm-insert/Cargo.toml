@@ -1,0 +1,19 @@
+[package]
+name = "esm-insert"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+esm-common.workspace = true
+esm-http = { path = "../esm-http" }
+esm-protoparser.workspace = true
+esm-storage.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+flate2 = "1"
+snap.workspace = true

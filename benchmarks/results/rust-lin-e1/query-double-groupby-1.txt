@@ -1,0 +1,7 @@
+Run complete after 1000 queries with 4 workers (Overall query rate 785.97 queries/sec):
+VictoriaMetrics mean of 1 metrics, all hosts, random 12h0m0s by 1h:
+min:     2.38ms, med:     4.91ms, mean:     5.07ms, max:    9.89ms, stddev:     1.28ms, sum:   5.1sec, count: 1000
+all queries                                                       :
+min:     2.38ms, med:     4.91ms, mean:     5.07ms, max:    9.89ms, stddev:     1.28ms, sum:   5.1sec, count: 1000
+wall clock time: 1.274679sec
+Saving results json file to /home/test/esmetrics/benchmarks/results/rust-lin-e1/query-double-groupby-1.json

@@ -1,0 +1,26 @@
+[package]
+name = "esmctl"
+description = "EsMetrics command-line migration tool (Rust port of app/vmctl — vm-native mode)"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "esmctl"
+path = "src/main.rs"
+
+[dependencies]
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+env_logger.workspace = true
+esm-metricsql.workspace = true
+esm-common.workspace = true
+esm-storage.workspace = true
+snap.workspace = true
+libc.workspace = true
+flate2 = "1"

@@ -1,0 +1,7 @@
+Run complete after 1000 queries with 4 workers (Overall query rate 686.43 queries/sec):
+VictoriaMetrics max of all CPU metrics, random    8 hosts, random 8h0m0s by 1h:
+min:     1.54ms, med:     5.29ms, mean:     5.80ms, max:   26.72ms, stddev:     2.39ms, sum:   5.8sec, count: 1000
+all queries                                                                   :
+min:     1.54ms, med:     5.29ms, mean:     5.80ms, max:   26.72ms, stddev:     2.39ms, sum:   5.8sec, count: 1000
+wall clock time: 1.461030sec
+Saving results json file to /home/test/esmetrics/benchmarks/results/go-lin8/query-cpu-max-all-8.json

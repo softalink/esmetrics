@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  lint-test-linux:
+    name: Lint + test (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+      - name: Install MinGW (windows-gnu compile gate)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-mingw-w64-x86-64
+      - name: rustfmt
+        run: cargo fmt --all --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets
+      - name: tests
+        run: cargo test --workspace
+      - name: windows-gnu compile gate
+        run: cargo check --workspace --target x86_64-pc-windows-gnu
+
+  test-windows:
+    name: Test (Windows, MSVC)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: tests
+        run: cargo test --workspace

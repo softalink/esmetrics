@@ -1,0 +1,130 @@
+name: Release
+
+on:
+  push:
+    tags: ["v1.*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-linux:
+    name: Build (Linux x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release -p esmetrics
+      - name: Package
+        run: |
+          STAGE=esmetrics-${GITHUB_REF_NAME}-linux-amd64
+          mkdir -p "$STAGE"
+          cp target/release/esmetrics LICENSE NOTICE README.md "$STAGE/"
+          tar czf "$STAGE.tar.gz" "$STAGE"
+          sha256sum "$STAGE.tar.gz" > "$STAGE.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-amd64
+          path: |
+            esmetrics-*-linux-amd64.tar.gz
+            esmetrics-*-linux-amd64.tar.gz.sha256
+
+  build-windows:
+    name: Build (Windows x86_64, MSVC)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release -p esmetrics
+      - name: Package
+        shell: pwsh
+        run: |
+          $stage = "esmetrics-$env:GITHUB_REF_NAME-windows-amd64"
+          New-Item -ItemType Directory -Path $stage | Out-Null
+          Copy-Item target/release/esmetrics.exe, LICENSE, NOTICE, README.md $stage/
+          Compress-Archive -Path $stage -DestinationPath "$stage.zip"
+          (Get-FileHash "$stage.zip" -Algorithm SHA256).Hash.ToLower() + "  $stage.zip" `
+            | Out-File -Encoding ascii "$stage.zip.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-amd64
+          path: |
+            esmetrics-*-windows-amd64.zip
+            esmetrics-*-windows-amd64.zip.sha256
+
+  build-linux-esmauth:
+    name: Build esmauth (Linux x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release -p esmauth
+      - name: Package
+        run: |
+          STAGE=esmauth-${GITHUB_REF_NAME}-linux-amd64
+          mkdir -p "$STAGE"
+          cp target/release/esmauth LICENSE NOTICE README.md "$STAGE/"
+          tar czf "$STAGE.tar.gz" "$STAGE"
+          sha256sum "$STAGE.tar.gz" > "$STAGE.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-amd64-esmauth
+          path: |
+            esmauth-*-linux-amd64.tar.gz
+            esmauth-*-linux-amd64.tar.gz.sha256
+
+  build-windows-esmauth:
+    name: Build esmauth (Windows x86_64, MSVC)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release -p esmauth
+      - name: Package
+        shell: pwsh
+        run: |
+          $stage = "esmauth-$env:GITHUB_REF_NAME-windows-amd64"
+          New-Item -ItemType Directory -Path $stage | Out-Null
+          Copy-Item target/release/esmauth.exe, LICENSE, NOTICE, README.md $stage/
+          Compress-Archive -Path $stage -DestinationPath "$stage.zip"
+          (Get-FileHash "$stage.zip" -Algorithm SHA256).Hash.ToLower() + "  $stage.zip" `
+            | Out-File -Encoding ascii "$stage.zip.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-amd64-esmauth
+          path: |
+            esmauth-*-windows-amd64.zip
+            esmauth-*-windows-amd64.zip.sha256
+
+  release:
+    name: Publish GitHub release
+    needs: [build-linux, build-windows, build-linux-esmauth, build-windows-esmauth]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            esmetrics-*.tar.gz
+            esmetrics-*.tar.gz.sha256
+            esmetrics-*.zip
+            esmetrics-*.zip.sha256
+            esmauth-*.tar.gz
+            esmauth-*.tar.gz.sha256
+            esmauth-*.zip
+            esmauth-*.zip.sha256

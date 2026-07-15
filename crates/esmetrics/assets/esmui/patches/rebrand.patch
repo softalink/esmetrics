@@ -1,0 +1,313 @@
+diff --git a/index.html b/index.html
+index 649d9c8..f83420a 100644
+--- a/index.html
++++ b/index.html
+@@ -9,7 +9,7 @@
+   <meta name="robots" content="noindex">
+   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5"/>
+   <meta name="theme-color" content="#000000"/>
+-  <meta name="description" content="Explore and troubleshoot your VictoriaMetrics data"/>
++  <meta name="description" content="Explore and troubleshoot your EsMetrics data"/>
+   <!--
+     manifest.json provides metadata used when your web app is installed on a
+     user's mobile device or desktop. See https://developers.google.com/web/fundamentals/web-app-manifest/
+@@ -24,19 +24,18 @@
+     work correctly both with client-side routing and a non-root public URL.
+     Learn how to configure a non-root public URL by running `npm run build`.
+   -->
+-  <title>vmui</title>
++  <title>EsMetrics UI</title>
+   <script src="/dashboards/index.js" type="module"></script>
+ 
+   <meta name="twitter:card" content="summary">
+-  <meta name="twitter:title" content="UI for VictoriaMetrics">
+-  <meta name="twitter:site" content="@https://victoriametrics.com/">
+-  <meta name="twitter:description" content="Explore and troubleshoot your VictoriaMetrics data">
++  <meta name="twitter:title" content="EsMetrics UI">
++  <meta name="twitter:description" content="Explore and troubleshoot your EsMetrics data">
+   <meta name="twitter:image" content="/preview.jpg">
+ 
+   <meta property="og:type" content="website">
+-  <meta property="og:title" content="UI for VictoriaMetrics">
+-  <meta property="og:url" content="https://victoriametrics.com/">
+-  <meta property="og:description" content="Explore and troubleshoot your VictoriaMetrics data">
++  <meta property="og:title" content="EsMetrics UI">
++  <meta property="og:url" content="https://github.com/softalink/esmetrics">
++  <meta property="og:description" content="Explore and troubleshoot your EsMetrics data">
+ </head>
+ <body>
+ <noscript>You need to enable JavaScript to run this app.</noscript>
+diff --git a/public/favicon.svg b/public/favicon.svg
+index 2db0b8f..6092266 100644
+--- a/public/favicon.svg
++++ b/public/favicon.svg
+@@ -1 +1,17 @@
+-<svg width="48" height="48" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M24.5475 0C10.3246.0265251 1.11379 3.06365 4.40623 6.10077c0 0 12.32997 11.23333 16.58217 14.84083.8131.6896 2.1728 1.1936 3.5191 1.2201h.1199c1.3463-.0265 2.706-.5305 3.5191-1.2201 4.2522-3.5942 16.5422-14.84083 16.5422-14.84083C48.0478 3.06365 38.8636.0265251 24.6674 0" fill="#020202"/><path d="M28.1579 27.0159c-.8131.6896-2.1728 1.1936-3.5191 1.2201h-.12c-1.3463-.0265-2.7059-.5305-3.519-1.2201-2.9725-2.5067-13.35639-11.87-17.26201-15.3979v5.4112c0 .5968.22661 1.3793.6265 1.7506C7.00358 21.1936 17.2675 30.5437 20.9731 33.6737c.8132.6896 2.1728 1.1936 3.5191 1.2201h.12c1.3463-.0265 2.7059-.5305 3.519-1.2201 3.679-3.13 13.9429-12.4536 16.6089-14.8939.4132-.3713.6265-1.1538.6265-1.7506V11.618c-3.9323 3.5411-14.3162 12.931-17.2354 15.3979h.0267Z" fill="#020202"/><path d="M28.1579 39.748c-.8131.6897-2.1728 1.1937-3.5191 1.2202h-.12c-1.3463-.0265-2.7059-.5305-3.519-1.2202-2.9725-2.4933-13.35639-11.8567-17.26201-15.3978v5.4111c0 .5969.22661 1.3793.6265 1.7507C7.00358 33.9258 17.2675 43.2759 20.9731 46.4058c.8132.6897 2.1728 1.1937 3.5191 1.2202h.12c1.3463-.0265 2.7059-.5305 3.519-1.2202 3.679-3.1299 13.9429-12.4535 16.6089-14.8938.4132-.3714.6265-1.1538.6265-1.7507v-5.4111c-3.9323 3.5411-14.3162 12.931-17.2354 15.3978h.0267Z" fill="#020202"/></svg>
++<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="EsMetrics">
++  <defs>
++    <linearGradient id="s" x1="0" y1="0" x2="0" y2="1">
++      <stop offset="0" stop-color="#122B4A"/>
++      <stop offset="1" stop-color="#0B1D33"/>
++    </linearGradient>
++    <linearGradient id="p" x1="0" y1="0" x2="1" y2="0">
++      <stop offset="0" stop-color="#27E0A6"/>
++      <stop offset="1" stop-color="#3EC5FF"/>
++    </linearGradient>
++  </defs>
++  <path d="M16 1.5 L28.5 6 v10 c0 7.5 -5.4 12.9 -12.5 14.5 C8.9 28.9 3.5 23.5 3.5 16 V6 Z"
++        fill="url(#s)" stroke="#35618F"/>
++  <polyline points="7,18.5 10.5,17.5 12.5,19.5 14.5,12.5 16,21 18.5,7.5 20.5,20 22.5,15.5 25,16.5"
++            fill="none" stroke="url(#p)" stroke-width="2.4"
++            stroke-linecap="round" stroke-linejoin="round"/>
++</svg>
+diff --git a/public/manifest.json b/public/manifest.json
+index 9d9946b..fd6329f 100644
+--- a/public/manifest.json
++++ b/public/manifest.json
+@@ -1,6 +1,6 @@
+ {
+-  "short_name": "vmui",
+-  "name": "vmui",
++  "short_name": "EsMetrics UI",
++  "name": "EsMetrics UI",
+   "icons": [
+     {
+       "src": "favicon.svg",
+diff --git a/src/assets/brand/logo-dark.svg b/src/assets/brand/logo-dark.svg
+new file mode 100644
+index 0000000..c27857a
+--- /dev/null
++++ b/src/assets/brand/logo-dark.svg
+@@ -0,0 +1,45 @@
++<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 160" width="640" height="160" role="img" aria-label="EsMetrics — secure, fast, memory-safe time-series database">
++  <defs>
++    <linearGradient id="shield" x1="0" y1="0" x2="0" y2="1">
++      <stop offset="0" stop-color="#122B4A"/>
++      <stop offset="1" stop-color="#0B1D33"/>
++    </linearGradient>
++    <linearGradient id="pulse" x1="0" y1="0" x2="1" y2="0">
++      <stop offset="0" stop-color="#27E0A6"/>
++      <stop offset="1" stop-color="#3EC5FF"/>
++    </linearGradient>
++  </defs>
++
++  <!-- Static dark-theme variant (for <picture> sources and dark-only contexts). -->
++  <style>
++    .shield-border { stroke: #4879B2; }
++    .word-primary  { fill: #E6EDF3; }
++    .word-accent   { fill: #2BD9A0; }
++    .tagline       { fill: #93A9BE; }
++  </style>
++
++  <!-- Shield: security -->
++  <path class="shield-border" d="M80 12 L136 32 v44 c0 34 -24 58 -56 70 C48 134 24 110 24 76 V32 Z"
++        fill="url(#shield)" stroke-width="3"/>
++
++  <!-- Time axis ticks inside the shield: time series -->
++  <g stroke="#3A6795" stroke-width="2" opacity="0.7">
++    <line x1="44" y1="104" x2="116" y2="104"/>
++    <line x1="52" y1="100" x2="52" y2="108"/>
++    <line x1="72" y1="100" x2="72" y2="108"/>
++    <line x1="92" y1="100" x2="92" y2="108"/>
++    <line x1="112" y1="100" x2="112" y2="108"/>
++  </g>
++
++  <!-- Sparkline pulse with a lightning-sharp spike: fast time series -->
++  <polyline points="40,84 56,80 64,88 72,60 78,96 86,38 94,92 102,72 112,76 120,68"
++            fill="none" stroke="url(#pulse)" stroke-width="6"
++            stroke-linecap="round" stroke-linejoin="round"/>
++  <circle cx="86" cy="38" r="5.5" fill="#27E0A6"/>
++
++  <!-- Wordmark -->
++  <text class="word-primary" x="168" y="86" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif"
++        font-size="58" font-weight="700" letter-spacing="-1">Es<tspan class="word-accent">Metrics</tspan></text>
++  <text class="tagline" x="171" y="118" font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif"
++        font-size="13" font-weight="600" letter-spacing="1.2">SECURE, FAST, MEMORY-SAFE TIME-SERIES DATABASE</text>
++</svg>
+diff --git a/src/components/Main/Icons/index.tsx b/src/components/Main/Icons/index.tsx
+index 2086973..4e58b56 100644
+--- a/src/components/Main/Icons/index.tsx
++++ b/src/components/Main/Icons/index.tsx
+@@ -56,28 +56,6 @@ export const RecordingRuleIcon = () => (
+   </svg>
+ );
+ 
+-export const LogoIcon = () => (
+-  <svg
+-    viewBox="0 0 74 24"
+-    fill="currentColor"
+-  >
+-    <path
+-      d="M6.12 10.48c.36.28.8.43 1.26.43h.05c.48 0 .96-.19 1.25-.44 1.5-1.28 5.88-5.29 5.88-5.29C15.73 4.1 12.46 3.01 7.43 3h-.06C2.33 3-.93 4.1.24 5.18c0 0 4.37 4 5.88 5.3Zm2.56 2.16c-.36.28-.8.44-1.26.45h-.04c-.46 0-.9-.17-1.26-.45-1.04-.88-4.74-4.22-6.12-5.5v1.94c0 .21.08.5.22.63l.07.06c1.05.96 4.55 4.16 5.83 5.25.36.28.8.43 1.26.44h.04c.49-.02.96-.2 1.26-.44 1.3-1.11 4.94-4.45 5.88-5.31.15-.14.23-.42.23-.63V7.15a454.94 454.94 0 0 1-6.11 5.5Zm-1.26 4.99c.46 0 .9-.16 1.26-.44a454.4 454.4 0 0 0 6.1-5.5v1.94c0 .2-.07.48-.22.62-.94.87-4.57 4.2-5.88 5.3-.3.26-.77.44-1.26.45h-.04c-.46 0-.9-.16-1.26-.44-1.2-1.02-4.38-3.92-5.62-5.06l-.28-.25c-.14-.14-.22-.42-.22-.62v-1.94c1.38 1.26 5.08 4.6 6.12 5.5.36.28.8.43 1.26.44h.04ZM35 5l-5.84 14.46h-2.43L20.89 5h2.16a.9.9 0 0 1 .9.61l3.41 8.82a18.8 18.8 0 0 1 .62 2.02 19.44 19.44 0 0 1 .57-2.02l3.39-8.82c.05-.15.16-.3.31-.42a.9.9 0 0 1 .58-.19H35Zm17.18 0v14.46H49.8v-9.34c0-.37.02-.78.06-1.21l-4.37 8.21c-.21.4-.53.59-.95.59h-.38c-.43 0-.75-.2-.95-.59L38.8 8.88a22.96 22.96 0 0 1 .07 1.24v9.34H36.5V5h2.03l.3.01c.1 0 .17.02.24.05.07.03.13.07.19.13a1 1 0 0 1 .17.24l4.33 8.03a16.97 16.97 0 0 1 .6 1.36 14.34 14.34 0 0 1 .6-1.38l4.28-8.01c.05-.1.1-.18.17-.24.06-.06.12-.1.19-.13a.9.9 0 0 1 .24-.05l.3-.01h2.04Zm8.88 13.73a4.5 4.5 0 0 0 1.82-.35 3.96 3.96 0 0 0 2.22-2.47c.2-.57.3-1.19.3-1.85V5.31h1.02v8.75c0 .78-.12 1.51-.37 2.19a4.88 4.88 0 0 1-2.76 2.95c-.66.29-1.4.43-2.23.43-.82 0-1.57-.14-2.24-.43a5.01 5.01 0 0 1-2.75-2.95 6.37 6.37 0 0 1-.37-2.19V5.31h1.03v8.74c0 .66.1 1.28.3 1.85a3.98 3.98 0 0 0 2.21 2.47c.53.24 1.14.36 1.82.36Zm10.38.73h-1.03V5.31h1.03v14.15Z"
+-    />
+-  </svg>
+-);
+-
+-export const LogoShortIcon = () => (
+-  <svg
+-    viewBox="0 0 15 17"
+-    fill="currentColor"
+-  >
+-    <path
+-      d="M6.11767 7.47586C6.47736 7.75563 6.91931 7.90898 7.37503 7.91213H7.42681C7.90756 7.90474 8.38832 7.71987 8.67677 7.46846C10.1856 6.18921 14.5568 2.18138 14.5568 2.18138C15.7254 1.09438 12.4637 0.00739 7.42681 0H7.36764C2.3308 0.00739 -0.930935 1.09438 0.237669 2.18138C0.237669 2.18138 4.60884 6.18921 6.11767 7.47586ZM8.67677 9.64243C8.31803 9.92483 7.87599 10.0808 7.41941 10.0861H7.37503C6.91845 10.0808 6.47641 9.92483 6.11767 9.64243C5.0822 8.75513 1.38409 5.42018 0.000989555 4.14832V6.07829C0.000989555 6.29273 0.0823481 6.57372 0.222877 6.70682L0.293316 6.7712L0.293344 6.77122C1.33784 7.72579 4.83903 10.9255 6.11767 12.0161C6.47641 12.2985 6.91845 12.4545 7.37503 12.4597H7.41941C7.90756 12.4449 8.38092 12.2601 8.67677 12.0161C9.9859 10.9069 13.6249 7.57198 14.5642 6.70682C14.7121 6.57372 14.7861 6.29273 14.7861 6.07829V4.14832C12.7662 5.99804 10.7297 7.82949 8.67677 9.64243ZM7.41941 14.6263C7.87513 14.6232 8.31708 14.4698 8.67677 14.19C10.7298 12.3746 12.7663 10.5407 14.7861 8.68853V10.6259C14.7861 10.8329 14.7121 11.1139 14.5642 11.247C13.6249 12.1196 9.9859 15.4471 8.67677 16.5563C8.38092 16.8077 7.90756 16.9926 7.41941 17H7.37503C6.91931 16.9968 6.47736 16.8435 6.11767 16.5637C4.91427 15.5373 1.74219 12.6364 0.502294 11.5025C0.393358 11.4029 0.299337 11.3169 0.222877 11.247C0.0823481 11.1139 0.000989555 10.8329 0.000989555 10.6259V8.68853C1.38409 9.95303 5.0822 13.2953 6.11767 14.1827C6.47641 14.4651 6.91845 14.6211 7.37503 14.6263H7.41941Z"
+-    />
+-  </svg>
+-);
+-
+ export const SettingsIcon = () => (
+   <svg
+     viewBox="0 0 24 24"
+diff --git a/src/constants/footerLinks.ts b/src/constants/footerLinks.ts
+index 95e285c..ca78e15 100644
+--- a/src/constants/footerLinks.ts
++++ b/src/constants/footerLinks.ts
+@@ -1,7 +1,7 @@
+ import { CodeIcon, IssueIcon, WikiIcon } from "../components/Main/Icons";
+ 
+ const issueLink = {
+-  href: "https://github.com/VictoriaMetrics/VictoriaMetrics/issues/new/choose",
++  href: "https://github.com/softalink/esmetrics/issues/new",
+   Icon: IssueIcon,
+   title: "Create an issue",
+ };
+@@ -13,7 +13,7 @@ export const footerLinksByDefault = [
+     title: "MetricsQL",
+   },
+   {
+-    href: "https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/#vmui",
++    href: "https://github.com/softalink/esmetrics#readme",
+     Icon: WikiIcon,
+     title: "Documentation",
+   },
+diff --git a/src/layouts/Footer/Footer.tsx b/src/layouts/Footer/Footer.tsx
+index 67b3159..687b0de 100644
+--- a/src/layouts/Footer/Footer.tsx
++++ b/src/layouts/Footer/Footer.tsx
+@@ -1,5 +1,4 @@
+ import { FC, memo } from "preact/compat";
+-import { LogoShortIcon } from "../../components/Main/Icons";
+ import "./style.scss";
+ import { footerLinksByDefault } from "../../constants/footerLinks";
+ import { useAppState } from "../../state/common/StateContext";
+@@ -13,20 +12,11 @@ interface Props {
+ }
+ 
+ const Footer: FC<Props> = memo(({ links = footerLinksByDefault }) => {
+-  const copyrightYears = `2019-${new Date().getFullYear()}`;
++  const copyrightYear = new Date().getFullYear();
+   const { appConfig } = useAppState();
+   const version = appConfig?.version;
+ 
+   return <footer className="vm-footer">
+-    <a
+-      className="vm-link vm-footer__link"
+-      target="_blank"
+-      href="https://victoriametrics.com/"
+-      rel="me noreferrer"
+-    >
+-      <LogoShortIcon/>
+-      victoriametrics.com
+-    </a>
+     {links.map(({ href, Icon, title }) => (
+       <a
+         className="vm-link vm-footer__link"
+@@ -40,7 +30,15 @@ const Footer: FC<Props> = memo(({ links = footerLinksByDefault }) => {
+       </a>
+     ))}
+     <div className="vm-footer__copyright">
+-      &copy; {copyrightYears} VictoriaMetrics.
++      &copy; {copyrightYear} Softalink LLC.
++      <a
++        className="vm-link"
++        target="_blank"
++        href="https://github.com/VictoriaMetrics/VictoriaMetrics"
++        rel="noreferrer"
++      >
++        &nbsp;Based on VictoriaMetrics vmui
++      </a>
+       {version && <span className="vm-footer__version">&nbsp;Version: {version}</span>}
+     </div>
+   </footer>;
+diff --git a/src/layouts/Header/Header.tsx b/src/layouts/Header/Header.tsx
+index 73250b2..227a966 100644
+--- a/src/layouts/Header/Header.tsx
++++ b/src/layouts/Header/Header.tsx
+@@ -2,7 +2,12 @@ import { FC, useMemo } from "preact/compat";
+ import { useNavigate } from "react-router-dom";
+ import router from "../../router";
+ import { getAppModeEnable, getAppModeParams } from "../../utils/app-mode";
+-import { LogoIcon } from "../../components/Main/Icons";
++// The header bar surface is dark in BOTH themes (light theme: color-primary
++// indigo; dark theme: color-background-block dark gray), so the
++// light-wordmark logo variant is always the right one — same reason
++// upstream's LogoIcon rendered in white (currentColor with color: #FFF)
++// regardless of theme.
++import logo from "../../assets/brand/logo-dark.svg";
+ import { getCssVariable } from "../../utils/theme";
+ import "./style.scss";
+ import classNames from "classnames";
+@@ -66,7 +71,7 @@ const Header: FC<HeaderProps> = ({ controlsComponent }) => {
+       onClick={onClickLogo}
+       style={{ color }}
+     >
+-      {<LogoIcon/>}
++      <img src={logo} alt="EsMetrics"/>
+     </div>
+ 
+     {displaySidebar ? (
+diff --git a/src/layouts/Header/style.scss b/src/layouts/Header/style.scss
+index a350a2b..1acb33a 100644
+--- a/src/layouts/Header/style.scss
++++ b/src/layouts/Header/style.scss
+@@ -46,7 +46,8 @@
+     margin-bottom: 2px;
+     overflow: hidden;
+ 
+-    svg {
++    svg,
++    img {
+       max-width: 75px;
+       min-width: 75px;
+     }
+diff --git a/src/layouts/MainLayout/MainLayout.tsx b/src/layouts/MainLayout/MainLayout.tsx
+index 2477308..35d818e 100644
+--- a/src/layouts/MainLayout/MainLayout.tsx
++++ b/src/layouts/MainLayout/MainLayout.tsx
+@@ -26,7 +26,7 @@ const MainLayout: FC = () => {
+   useFetchAppConfig();
+ 
+   const setDocumentTitle = () => {
+-    const defaultTitle = "vmui";
++    const defaultTitle = "EsMetrics UI";
+     const routeTitle = routerOptions[pathname]?.title;
+     document.title = routeTitle ? `${routeTitle} - ${defaultTitle}` : defaultTitle;
+   };
+diff --git a/src/utils/default-server-url.test.ts b/src/utils/default-server-url.test.ts
+index c051c8f..78e9e72 100644
+--- a/src/utils/default-server-url.test.ts
++++ b/src/utils/default-server-url.test.ts
+@@ -18,6 +18,11 @@ describe("test server urls", () => {
+       expect(result).toBe("https://domain.com/test/select/1:1/prometheus");
+     });
+ 
++    it("/select/0/esmui/", () => {
++      const result = getDefaultURL("https://localhost:1111/select/0/esmui/");
++      expect(result).toBe("https://localhost:1111/select/0/prometheus");
++    });
++
+     it("https://play.vm.com/#/rules?q=test", () => {
+       const result = getDefaultURL("https://play.vm.com/#/rules?q=test");
+       expect(result).toBe("https://play.vm.com/prometheus");
+diff --git a/src/utils/default-server-url.ts b/src/utils/default-server-url.ts
+index 728a6e0..00fdd13 100644
+--- a/src/utils/default-server-url.ts
++++ b/src/utils/default-server-url.ts
+@@ -2,7 +2,7 @@ import { getAppModeParams } from "./app-mode";
+ import { getFromStorage } from "./storage";
+ 
+ export const getDefaultURL = (u: string) => {
+-  return u.replace(/(\/(?:prometheus\/)?(?:graph|vmui)\/.*|\/#\/.*)/, "/prometheus");
++  return u.replace(/(\/(?:prometheus\/)?(?:graph|vmui|esmui)\/.*|\/#\/.*)/, "/prometheus");
+ };
+ 
+ export const getDefaultServer = (): string => {

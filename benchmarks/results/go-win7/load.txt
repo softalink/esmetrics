@@ -1,0 +1,6 @@
+time,per. metric/s,metric total,overall metric/s,per. row/s,row total,overall row/s
+
+Summary:
+loaded 8640000 metrics in 2.965sec with 4 workers (mean rate 2914341.73 metrics/sec)
+loaded 864000 rows in 2.965sec with 4 workers (mean rate 291434.17 rows/sec)
+Saving results json file to C:\bench\results\go-win7\load.json

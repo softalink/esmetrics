@@ -1,0 +1,6 @@
+time,per. metric/s,metric total,overall metric/s,per. row/s,row total,overall row/s
+
+Summary:
+loaded 8640000 metrics in 1.745sec with 4 workers (mean rate 4952537.32 metrics/sec)
+loaded 864000 rows in 1.745sec with 4 workers (mean rate 495253.73 rows/sec)
+Saving results json file to C:\bench\results\rust-msvc\load.json

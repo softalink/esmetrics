@@ -1,0 +1,48 @@
+{
+ "ResultFormatVersion": "0.1",
+ "RunnerConfig": {
+  "DBName": "benchmark",
+  "Limit": 0,
+  "LimitRPS": 0,
+  "MemProfile": "",
+  "HDRLatenciesFile": "",
+  "Workers": 4,
+  "PrintResponses": false,
+  "Debug": 0,
+  "FileName": "/home/test/refsrc/tsbs-data/queries-double-groupby-1.dat",
+  "BurnIn": 0,
+  "PrintInterval": 100,
+  "PrewarmQueries": false,
+  "ResultsFile": "/home/test/esmetrics/benchmarks/results/go-lin6/query-double-groupby-1.json"
+ },
+ "StartTime": 1783067068000,
+ "EndTime": 1783067070000,
+ "DurationMillis": 1877,
+ "Totals": {
+  "burnIn": 0,
+  "limit": 0,
+  "overallQuantiles": {
+   "VictoriaMetrics_mean_of_1_metrics_all_hosts_random_12h0m0s_by_1h": {
+    "q0": 0,
+    "q100": 18.008,
+    "q50": 7.188,
+    "q95": 10.686,
+    "q99": 13.88,
+    "q999": 17.926
+   },
+   "all_queries": {
+    "q0": 0,
+    "q100": 18.008,
+    "q50": 7.188,
+    "q95": 10.686,
+    "q99": 13.88,
+    "q999": 17.926
+   }
+  },
+  "overallQueryRates": {
+   "VictoriaMetrics_mean_of_1_metrics_all_hosts_random_12h0m0s_by_1h": 532.6957507835858,
+   "all_queries": 532.6957507835858
+  },
+  "prewarmQueries": false
+ }
+}

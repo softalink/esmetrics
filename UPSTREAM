@@ -1,0 +1,17 @@
+# Upstream baselines this port is synced to. Machine-readable KEY=VALUE;
+# consumed by scripts/upstream-diff.sh. Update via the sync process in
+# docs/UPSTREAM-SYNC.md (advance only after a completed sync).
+
+# github.com/VictoriaMetrics/VictoriaMetrics (single-node core)
+VM_REPO=https://github.com/VictoriaMetrics/VictoriaMetrics
+VM_TAG=v1.146.0
+VM_COMMIT=4d9901fbf42c518ecc6d467d65efea9c7d842bbd
+
+# github.com/VictoriaMetrics/metricsql (query language parser)
+METRICSQL_REPO=https://github.com/VictoriaMetrics/metricsql
+METRICSQL_TAG=v0.87.2
+METRICSQL_COMMIT=a808ea47f997dd66f9f414fda8169c271774ee78
+
+# Go paths in scope for the port (everything else is skipped by the diff
+# tooling; keep in sync with docs/PORTING.md).
+VM_SCOPE=lib/bytesutil lib/fasttime lib/fastnum lib/decimal lib/uint64set lib/regexutil lib/fs lib/filestream lib/memory lib/cgroup lib/logger lib/encoding lib/blockcache lib/workingsetcache lib/lrucache lib/mergeset lib/storage lib/protoparser/influx lib/protoparser/common lib/writeconcurrencylimiter lib/flagutil lib/httpserver app/vmselect app/vminsert app/victoria-metrics lib/prompb lib/protoparser/promremotewrite lib/protoparser/protoparserutil app/vminsert/promremotewrite lib/protoparser/prometheus lib/protoparser/vmimport lib/protoparser/csvimport app/vminsert/prometheusimport app/vminsert/vmimport app/vminsert/csvimport lib/protoparser/opentelemetry app/vminsert/opentelemetry lib/protoparser/graphite lib/protoparser/opentsdb lib/protoparser/opentsdbhttp lib/ingestserver app/vminsert/graphite app/vminsert/opentsdb app/vminsert/opentsdbhttp lib/protoparser/datadogutil lib/protoparser/datadogv1 lib/protoparser/datadogv2 app/vminsert/datadogv1 app/vminsert/datadogv2 app/vmauth

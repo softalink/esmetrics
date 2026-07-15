@@ -1,0 +1,6 @@
+time,per. metric/s,metric total,overall metric/s,per. row/s,row total,overall row/s
+
+Summary:
+loaded 8640000 metrics in 1.680sec with 4 workers (mean rate 5141929.71 metrics/sec)
+loaded 864000 rows in 1.680sec with 4 workers (mean rate 514192.97 rows/sec)
+Saving results json file to /home/test/esmetrics/benchmarks/results/rust-lin8/load.json

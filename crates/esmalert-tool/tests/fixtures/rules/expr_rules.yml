@@ -1,0 +1,11 @@
+# Rule file referenced (as `tests/fixtures/rules/expr_rules.yml`) by
+# ../pass/expr.yml. A `metricsql_expr_test`-only test
+# file must still reference `rule_files` yielding at least one rule group --
+# zero rule groups is a hard error (see esmalert-tool/src/runner.rs's
+# `zero_rule_groups_is_an_error` test) -- so this minimal recording rule
+# exists purely to satisfy that requirement; its own result isn't asserted.
+groups:
+  - name: g
+    rules:
+      - record: r
+        expr: up

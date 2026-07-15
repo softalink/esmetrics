@@ -1,0 +1,48 @@
+{
+ "ResultFormatVersion": "0.1",
+ "RunnerConfig": {
+  "DBName": "benchmark",
+  "Limit": 0,
+  "LimitRPS": 0,
+  "MemProfile": "",
+  "HDRLatenciesFile": "",
+  "Workers": 4,
+  "PrintResponses": false,
+  "Debug": 0,
+  "FileName": "C:\\bench\\data\\queries-single-groupby-1-1-1.dat",
+  "BurnIn": 0,
+  "PrintInterval": 100,
+  "PrewarmQueries": false,
+  "ResultsFile": "C:\\bench\\results-rust-win-e2\\query-single-groupby-1-1-1.json"
+ },
+ "StartTime": 1783358233000,
+ "EndTime": 1783358233000,
+ "DurationMillis": 77,
+ "Totals": {
+  "burnIn": 0,
+  "limit": 0,
+  "overallQuantiles": {
+   "VictoriaMetrics_1_cpu_metric_s_random_1_hosts_random_1h0m0s_by_1m": {
+    "q0": 0,
+    "q100": 12.816,
+    "q50": 0,
+    "q95": 0.575,
+    "q99": 3.661,
+    "q999": 5.173
+   },
+   "all_queries": {
+    "q0": 0,
+    "q100": 12.816,
+    "q50": 0,
+    "q95": 0.575,
+    "q99": 3.661,
+    "q999": 5.173
+   }
+  },
+  "overallQueryRates": {
+   "VictoriaMetrics_1_cpu_metric_s_random_1_hosts_random_1h0m0s_by_1m": 13029.927136647451,
+   "all_queries": 13029.927136647451
+  },
+  "prewarmQueries": false
+ }
+}

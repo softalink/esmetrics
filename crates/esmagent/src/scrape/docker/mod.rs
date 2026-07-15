@@ -1,0 +1,336 @@
+//! Docker service discovery (`docker_sd_configs`) support.
+//!
+//! Port of `lib/promscrape/discovery/docker` (v1.146.0): [`transport`] is the
+//! hand-rolled Unix-socket HTTP/1.1 client (reused by the forthcoming
+//! `dockerswarm_sd_configs` provider), [`client`] resolves the `host` into a
+//! transport (Unix socket vs HTTP) and issues the `/networks` +
+//! `/containers/json` fetches, [`network`]/[`labels`] hold the serde structs
+//! and the `__meta_docker_*` label builders, and [`DockerDiscovery`] (this
+//! file) is the [`super::discovery::Discovery`] the scrape manager polls.
+//!
+//! ## Refresh model
+//!
+//! Mirrors `scrape::digitalocean`: a single background thread re-lists
+//! networks+containers on a fixed interval
+//! (`-promscrape.dockerSDCheckInterval`, default 30s — upstream
+//! `docker.SDCheckInterval`'s `30*time.Second`), publishing the target-group
+//! snapshot behind a `Mutex`; [`DockerDiscovery::poll`] clones it.
+//! [`wait_or_stop`] observes a `stop`/`Drop` promptly rather than after a full
+//! interval.
+//!
+//! ## Startup robustness
+//!
+//! [`DockerDiscovery::new`] fails only on genuinely bad config (missing/invalid
+//! `host`, bad TLS material). A Docker daemon that is unreachable at startup
+//! does NOT fail `new()`: the first listing happens on the background thread
+//! (retried at the refresh cadence), and [`Discovery::poll`] returns an empty
+//! list until the first successful refresh — matching the
+//! k8s/consul/digitalocean robustness choice.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
+
+use serde::Deserialize;
+
+use client::{new_docker_api, DockerApi};
+use labels::add_containers_labels;
+use network::network_labels_by_id;
+
+use super::config::{RawAuthFields, RawBasicAuth, ScrapeError};
+use super::discovery::{Discovery, TargetGroup};
+use crate::client::{AuthConfig, TlsConfig};
+
+pub mod client;
+pub mod labels;
+pub mod network;
+pub mod transport;
+
+pub use client::DockerFilter;
+
+/// Default `docker_sd_config` refresh interval, matching
+/// `-promscrape.dockerSDCheckInterval`'s default (`docker.SDCheckInterval` =
+/// `30*time.Second`). `scrape::wiring::apply_docker_sd_check_interval`
+/// overrides it from the flag; `build_docker_sd_config` seeds it at parse time.
+pub const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Default target `port` when a container exposes no TCP port and a config
+/// doesn't set one — matches upstream `docker.newAPIConfig`'s `cfg.port = 80`.
+pub const DEFAULT_PORT: u16 = 80;
+
+/// Default `host_networking_host` — matches upstream `newAPIConfig`'s
+/// `hostNetworkingHost = "localhost"`.
+pub const DEFAULT_HOST_NETWORKING_HOST: &str = "localhost";
+
+/// Local `docker_sd_config` shape. Port of `discovery/docker.SDConfig`'s
+/// supported fields, built via [`build_docker_sd_config`] from
+/// [`RawDockerSdConfig`]. `refresh_interval` is not a YAML field (upstream
+/// reads it from `-promscrape.dockerSDCheckInterval`); it defaults to
+/// [`DEFAULT_REFRESH_INTERVAL`] and is overridden at wiring time.
+///
+/// Defined here (rather than in `scrape::config`) and re-exported from there,
+/// mirroring [`super::digitalocean::DigitaloceanSdConfig`], to keep
+/// `config.rs` under the repo's 800-line cap.
+///
+/// `Debug` is hand-written to redact the auth secret held in `auth` (mirrors
+/// `DigitaloceanSdConfig`).
+#[derive(Clone, PartialEq)]
+pub struct DockerSdConfig {
+    pub host: String,
+    pub port: u16,
+    pub filters: Vec<DockerFilter>,
+    pub host_networking_host: String,
+    pub match_first_network: bool,
+    pub auth: AuthConfig,
+    pub tls: TlsConfig,
+    pub refresh_interval: Duration,
+}
+
+impl Default for DockerSdConfig {
+    fn default() -> Self {
+        DockerSdConfig {
+            host: String::new(),
+            port: DEFAULT_PORT,
+            filters: Vec::new(),
+            host_networking_host: DEFAULT_HOST_NETWORKING_HOST.to_string(),
+            match_first_network: true,
+            auth: AuthConfig::default(),
+            tls: TlsConfig::default(),
+            refresh_interval: DEFAULT_REFRESH_INTERVAL,
+        }
+    }
+}
+
+impl std::fmt::Debug for DockerSdConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DockerSdConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("filters", &self.filters)
+            .field("host_networking_host", &self.host_networking_host)
+            .field("match_first_network", &self.match_first_network)
+            .field("auth", &"<redacted>")
+            .field("tls", &self.tls)
+            .field("refresh_interval", &self.refresh_interval)
+            .finish()
+    }
+}
+
+/// Undefaulted `docker_sd_config` list-entry shape. `bearer_token` holds a
+/// secret, so `Debug` is hand-written to redact it (this struct is reachable
+/// from `scrape::config`'s `RawScrapeConfig`'s derived `Debug`). Lives here
+/// (not in `scrape::config`) alongside [`DockerSdConfig`] and
+/// [`build_docker_sd_config`], keeping `config.rs` under the repo's 800-line
+/// cap.
+#[derive(Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct RawDockerSdConfig {
+    host: String,
+    port: Option<u16>,
+    filters: Vec<RawDockerFilter>,
+    host_networking_host: Option<String>,
+    match_first_network: Option<bool>,
+    basic_auth: Option<RawBasicAuth>,
+    bearer_token: Option<String>,
+    tls_config: Option<TlsConfig>,
+}
+
+/// Undefaulted `filters:` list entry.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub(crate) struct RawDockerFilter {
+    name: String,
+    values: Vec<String>,
+}
+
+impl std::fmt::Debug for RawDockerSdConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RawDockerSdConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("filters", &self.filters)
+            .field("host_networking_host", &self.host_networking_host)
+            .field("match_first_network", &self.match_first_network)
+            .field(
+                "basic_auth",
+                &self.basic_auth.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "bearer_token",
+                &self.bearer_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("tls_config", &self.tls_config)
+            .finish()
+    }
+}
+
+/// Builds a [`DockerSdConfig`] from its raw form. `port` defaults to
+/// [`DEFAULT_PORT`], `host_networking_host` to
+/// [`DEFAULT_HOST_NETWORKING_HOST`], `match_first_network` to `true` (upstream
+/// `newAPIConfig`); `refresh_interval` is seeded to the flag default and
+/// overridden by `scrape::wiring::apply_docker_sd_check_interval`.
+pub(crate) fn build_docker_sd_config(raw: RawDockerSdConfig) -> DockerSdConfig {
+    let auth_fields = RawAuthFields {
+        basic_auth: raw.basic_auth,
+        bearer_token: raw.bearer_token,
+    };
+    DockerSdConfig {
+        host: raw.host,
+        port: raw.port.unwrap_or(DEFAULT_PORT),
+        filters: raw
+            .filters
+            .into_iter()
+            .map(|f| DockerFilter {
+                name: f.name,
+                values: f.values,
+            })
+            .collect(),
+        host_networking_host: raw
+            .host_networking_host
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| DEFAULT_HOST_NETWORKING_HOST.to_string()),
+        match_first_network: raw.match_first_network.unwrap_or(true),
+        auth: auth_fields.into_auth_config(),
+        tls: raw.tls_config.unwrap_or_default(),
+        refresh_interval: DEFAULT_REFRESH_INTERVAL,
+    }
+}
+
+/// How often [`wait_or_stop`] re-checks the stop flag while waiting between
+/// refreshes. Local copy of the digitalocean/consul constant.
+const STOP_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// [`Discovery`] over one `docker_sd_config` entry. A background thread
+/// refreshes the target-group snapshot on `refresh_interval`; [`poll`] clones
+/// the current snapshot.
+///
+/// [`poll`]: Discovery::poll
+pub struct DockerDiscovery {
+    snapshot: Arc<Mutex<Vec<TargetGroup>>>,
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+/// Everything the refresh thread needs for its lifetime.
+struct RefreshCtx {
+    api: DockerApi,
+    snapshot: Arc<Mutex<Vec<TargetGroup>>>,
+    stop: Arc<AtomicBool>,
+    job: String,
+    port: u16,
+    host_networking_host: String,
+    match_first_network: bool,
+    refresh_interval: Duration,
+}
+
+impl DockerDiscovery {
+    /// Builds the Docker API client (failing only on bad config — see the
+    /// module doc) and spawns the background refresh thread. The snapshot
+    /// starts empty and is populated by the thread's first successful refresh.
+    pub fn new(cfg: &DockerSdConfig, job: &str) -> Result<DockerDiscovery, ScrapeError> {
+        let api = new_docker_api(cfg)?;
+        let snapshot = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let ctx = RefreshCtx {
+            api,
+            snapshot: Arc::clone(&snapshot),
+            stop: Arc::clone(&stop),
+            job: job.to_string(),
+            port: cfg.port,
+            host_networking_host: cfg.host_networking_host.clone(),
+            match_first_network: cfg.match_first_network,
+            refresh_interval: cfg.refresh_interval,
+        };
+
+        let handle = thread::spawn(move || run(&ctx));
+
+        Ok(DockerDiscovery {
+            snapshot,
+            stop,
+            handle: Some(handle),
+        })
+    }
+
+    /// Signals the refresh thread to stop and joins it. Idempotent; also run
+    /// by `Drop`.
+    fn stop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for DockerDiscovery {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+impl Discovery for DockerDiscovery {
+    fn poll(&mut self) -> Vec<TargetGroup> {
+        self.snapshot.lock().unwrap().clone()
+    }
+}
+
+/// The refresh thread's whole life: re-list networks+containers on
+/// `refresh_interval`. A fetch failure is logged and retried at the same
+/// cadence, keeping the previous snapshot (so a transiently-unreachable Docker
+/// daemon never wipes discovered targets).
+fn run(ctx: &RefreshCtx) {
+    let source = format!("{}/docker", ctx.job);
+    loop {
+        if ctx.stop.load(Ordering::SeqCst) {
+            return;
+        }
+
+        match refresh(ctx, &source) {
+            Ok(groups) => *ctx.snapshot.lock().unwrap() = groups,
+            Err(e) => log::warn!(
+                "esmagent docker_sd ({}): refresh failed, keeping last-good targets: {e}",
+                ctx.job
+            ),
+        }
+
+        if wait_or_stop(&ctx.stop, ctx.refresh_interval) {
+            return;
+        }
+    }
+}
+
+/// One refresh: fetch networks (for the ID-keyed label map) then containers,
+/// and build the target groups. Port of `getContainersLabels`.
+fn refresh(ctx: &RefreshCtx, source: &str) -> Result<Vec<TargetGroup>, ScrapeError> {
+    let networks = ctx.api.get_networks()?;
+    let network_labels = network_labels_by_id(&networks);
+    let containers = ctx.api.get_containers()?;
+    Ok(add_containers_labels(
+        &containers,
+        &network_labels,
+        ctx.port,
+        &ctx.host_networking_host,
+        ctx.match_first_network,
+        source,
+    ))
+}
+
+/// Sleeps up to `dur`, polling `stop` every [`STOP_POLL_INTERVAL`]. Returns
+/// `true` if `stop` was observed. Local copy of the digitalocean helper.
+fn wait_or_stop(stop: &AtomicBool, dur: Duration) -> bool {
+    let mut remaining = dur;
+    while remaining > Duration::ZERO {
+        if stop.load(Ordering::SeqCst) {
+            return true;
+        }
+        let step = remaining.min(STOP_POLL_INTERVAL);
+        thread::sleep(step);
+        remaining = remaining.saturating_sub(step);
+    }
+    stop.load(Ordering::SeqCst)
+}
+
+#[cfg(test)]
+#[path = "docker_tests.rs"]
+mod tests;

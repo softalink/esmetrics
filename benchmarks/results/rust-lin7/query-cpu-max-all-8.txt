@@ -1,0 +1,7 @@
+Run complete after 1000 queries with 4 workers (Overall query rate 1052.58 queries/sec):
+VictoriaMetrics max of all CPU metrics, random    8 hosts, random 8h0m0s by 1h:
+min:     1.70ms, med:     3.63ms, mean:     3.79ms, max:    7.92ms, stddev:     1.10ms, sum:   3.8sec, count: 1000
+all queries                                                                   :
+min:     1.70ms, med:     3.63ms, mean:     3.79ms, max:    7.92ms, stddev:     1.10ms, sum:   3.8sec, count: 1000
+wall clock time: 0.952025sec
+Saving results json file to /home/test/esmetrics/benchmarks/results/rust-lin7/query-cpu-max-all-8.json
